@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 
@@ -11,6 +12,52 @@ const PORT = 3000;
 // Body parser
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Ensure data directory exists for persistent storage
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+// Initialize sample data if not present
+function initializeData() {
+  if (!fs.existsSync(USERS_FILE)) {
+    const defaultUsers = [
+      {
+        id: 'usr_demo_01',
+        email: 'architect@interio.design',
+        password: 'interio2026',
+        name: 'Alex Vance',
+        createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
+      },
+      {
+        id: 'usr_demo_02',
+        email: 'demo@interio.ai',
+        password: 'password123',
+        name: 'Alex Vance',
+        createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
+      },
+    ];
+    fs.writeFileSync(USERS_FILE, JSON.stringify(defaultUsers, null, 2));
+  }
+}
+
+initializeData();
+
+// Storage helper functions
+function readUsers() {
+  try {
+    return JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function writeUsers(users: any[]) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
 
 // Health Check API
 app.get('/api/health', (req, res) => {
