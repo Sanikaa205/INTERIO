@@ -1,0 +1,8 @@
+{
+  "name": "final INTERIO",
+  "description": "AI-powered architectural platform unifying floor plan generation, personalized interior design, and existing house reconstruction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
