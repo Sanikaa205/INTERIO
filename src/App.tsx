@@ -3,6 +3,7 @@ import {
   DesignStyle,
   FloorPlanResult,
   InteriorDesignResult,
+  ReconstructionData,
   SavedProject,
   User,
   WorkflowType,
@@ -20,6 +21,7 @@ import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
 import { FloorPlanWorkflow } from './components/FloorPlanWorkflow';
 import { InteriorDesignWorkflow } from './components/InteriorDesignWorkflow';
+import { ReconstructionWorkflow } from './components/ReconstructionWorkflow';
 import { Menu, ArrowLeft, Layers, Box, Check, X } from 'lucide-react';
 
 export default function App() {
@@ -37,7 +39,9 @@ export default function App() {
   const [selectedInteriorStyle, setSelectedInteriorStyle] = useState<DesignStyle>('japandi');
 
   // Active 3D Visualization Payload (rendered once the 3D Studio lands)
-  const [active3DData, setActive3DData] = useState<FloorPlanResult | InteriorDesignResult | null>(null);
+  const [active3DData, setActive3DData] = useState<
+    FloorPlanResult | InteriorDesignResult | ReconstructionData | null
+  >(null);
   const [active3DType, setActive3DType] = useState<'floorplan' | 'interior' | 'renovation'>('floorplan');
   const [active3DTitle, setActive3DTitle] = useState<string>('Parametric Design Studio');
 
@@ -146,6 +150,24 @@ export default function App() {
     });
     setSaveTitle(`${result.style} ${result.roomWidth}x${result.roomLength}m Concept`);
     setSaveDescription(result.designPhilosophy || 'Personalized interior curation.');
+    setSaveModalOpen(true);
+  };
+
+  const handleViewReconstruction3D = (result: ReconstructionData) => {
+    setActive3DData(result);
+    setActive3DType('renovation');
+    setActive3DTitle(`Renovated ${result.renovationDesign?.style || 'Modern'} Room`);
+    setActiveTab('3d-studio');
+  };
+
+  const triggerSaveReconstruction = (result: ReconstructionData) => {
+    setPendingSaveData({
+      data: result,
+      type: 'renovation',
+      defaultTitle: `Renovation of Existing Space`,
+    });
+    setSaveTitle(`Renovation of Existing Space`);
+    setSaveDescription(result.structuralObservations || 'Photogrammetric room transformation.');
     setSaveModalOpen(true);
   };
 
@@ -312,7 +334,15 @@ export default function App() {
             />
           )}
 
-          {(activeTab === 'reconstruction' || activeTab === '3d-studio') && (
+          {activeTab === 'reconstruction' && (
+            <ReconstructionWorkflow
+              onView3D={handleViewReconstruction3D}
+              onSaveProject={triggerSaveReconstruction}
+              onBackToHome={() => setActiveTab('dashboard')}
+            />
+          )}
+
+          {activeTab === '3d-studio' && (
             <div className="flex items-center justify-center py-24 text-sm text-stone-400">
               <div className="flex items-center gap-2">
                 <Box className="w-4 h-4" />

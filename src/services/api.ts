@@ -1,4 +1,10 @@
-import { FloorPlanResult, InteriorDesignResult, SavedProject, User } from '../types';
+import {
+  FloorPlanResult,
+  InteriorDesignResult,
+  ReconstructionData,
+  SavedProject,
+  User,
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -184,6 +190,25 @@ export async function generateInteriorApi(params: {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to generate interior design' }));
     throw new Error(err.error || 'Failed to generate interior design');
+  }
+  return res.json();
+}
+
+export async function reconstructRoomApi(params: {
+  imageBase64?: string;
+  cornerPoints?: { x: number; y: number }[];
+  style: string;
+  budget: string;
+  roomType: string;
+}): Promise<ReconstructionData> {
+  const res = await fetch(`${API_BASE}/gemini/reconstruct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to analyze room' }));
+    throw new Error(err.error || 'Failed to analyze room');
   }
   return res.json();
 }
