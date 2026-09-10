@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { SavedProject, User } from './types';
-import { getCurrentUser, getStoredUser, logoutApi } from './services/api';
+import {
+  getCurrentUser,
+  getStoredUser,
+  fetchProjectsApi,
+  deleteProjectApi,
+  logoutApi,
+} from './services/api';
 import { NavigationSidebar } from './components/NavigationSidebar';
 import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
@@ -14,8 +20,8 @@ export default function App() {
   const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>('login');
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
 
-  // Saved projects will be wired up once the projects API lands
-  const [projects] = useState<SavedProject[]>([]);
+  const [projects, setProjects] = useState<SavedProject[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState<boolean>(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -37,6 +43,10 @@ export default function App() {
         }
       } catch (err) {
         console.log('[INTERIO Session] Session notice:', err);
+      } finally {
+        if (isMounted) {
+          loadProjects();
+        }
       }
     };
 
@@ -46,9 +56,31 @@ export default function App() {
     };
   }, []);
 
+  const loadProjects = async () => {
+    setLoadingProjects(true);
+    try {
+      const projs = await fetchProjectsApi();
+      setProjects(projs);
+    } catch (err) {
+      console.log('[INTERIO Projects] Project notice:', err);
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
+
   const handleAuthSuccess = (user: User) => {
     setCurrentUser(user);
     setActiveTab('dashboard');
+    loadProjects();
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    try {
+      await deleteProjectApi(projectId);
+      setProjects(projects.filter((p) => p.id !== projectId));
+    } catch (err) {
+      console.error('Failed to delete project', err);
+    }
   };
 
   const handleLogout = async () => {
@@ -161,8 +193,8 @@ export default function App() {
               user={currentUser}
               projects={projects}
               onNavigateWorkflow={(wf) => setActiveTab(wf)}
-              onOpenProject={() => {}}
-              onDeleteProject={() => {}}
+              onOpenProject={() => setActiveTab('3d-studio')}
+              onDeleteProject={handleDeleteProject}
               onOpen3D={() => setActiveTab('3d-studio')}
               onSelectStylePreset={() => setActiveTab('interior')}
               onOpenAuth={openAuthWithMode}

@@ -1,4 +1,4 @@
-import { User } from '../types';
+import { SavedProject, User } from '../types';
 
 const API_BASE = '/api';
 
@@ -98,3 +98,53 @@ export function logoutUser(): void {
 export const logoutApi = async (): Promise<void> => {
   logoutUser();
 };
+
+// ----------------------------------------------------
+// PROJECT SERVICES
+// ----------------------------------------------------
+export async function fetchProjects(): Promise<SavedProject[]> {
+  const res = await fetch(`${API_BASE}/projects`, {
+    headers: { ...getAuthHeader() },
+  });
+  if (!res.ok) throw new Error('Failed to load projects');
+  const data = await res.json();
+  return data.projects || [];
+}
+
+export async function createProject(payload: {
+  title: string;
+  description?: string;
+  type: SavedProject['type'];
+  data: SavedProject['data'];
+}): Promise<SavedProject> {
+  const user = localStorage.getItem('interio_user');
+  const userId = user ? JSON.parse(user).id : 'usr_demo_01';
+
+  const res = await fetch(`${API_BASE}/projects`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeader(),
+    },
+    body: JSON.stringify({ ...payload, userId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to save project' }));
+    throw new Error(err.error || 'Failed to save project');
+  }
+  const data = await res.json();
+  return data.project;
+}
+
+export async function deleteProject(id: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/projects/${id}`, {
+    method: 'DELETE',
+    headers: { ...getAuthHeader() },
+  });
+  if (!res.ok) throw new Error('Failed to delete project');
+  return true;
+}
+
+export const fetchProjectsApi = fetchProjects;
+export const saveProjectApi = createProject;
+export const deleteProjectApi = deleteProject;
