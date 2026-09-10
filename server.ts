@@ -155,6 +155,55 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+// Multi-model Gemini caller with automated fallback and backoff for high-demand spikes
+async function generateGeminiContentWithFallback(
+  ai: GoogleGenAI,
+  contents: any,
+  options: {
+    temperature?: number;
+    responseMimeType?: string;
+    isVision?: boolean;
+  } = {}
+): Promise<string> {
+  // Use high-capacity flash-lite first to avoid temporary demand spikes on flash-3.8
+  const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          responseMimeType: options.responseMimeType || 'application/json',
+          temperature: options.temperature ?? 0.2,
+        },
+      });
+
+      if (response && response.text) {
+        return response.text;
+      }
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || String(err);
+      const isTemporaryDemand =
+        errMsg.includes('503') ||
+        errMsg.includes('high demand') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('429');
+
+      console.log(`[INTERIO Engine] Model ${model} is busy; rotating to next candidate...`);
+
+      if (isTemporaryDemand) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 // Health Check API
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'INTERIO', timestamp: new Date().toISOString() });
@@ -372,15 +421,10 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
 
     let text = '';
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-flash-latest',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
+      text = await generateGeminiContentWithFallback(ai, prompt, {
+        temperature: 0.2,
+        responseMimeType: 'application/json',
       });
-      text = response.text || '';
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing layout using parametric architectural algorithm.');
       const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
@@ -487,15 +531,10 @@ Return STRICT JSON ONLY conforming to this schema:
 
     let text = '';
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-flash-latest',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.3,
-        },
+      text = await generateGeminiContentWithFallback(ai, prompt, {
+        temperature: 0.3,
+        responseMimeType: 'application/json',
       });
-      text = response.text || '';
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing interior palette using architectural curation matrix.');
       return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
@@ -797,25 +836,23 @@ Return STRICT JSON ONLY conforming to this format:
 }`;
 
       try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-flash-latest',
-          contents: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType,
-              },
+        const contents = [
+          {
+            inlineData: {
+              data: cleanBase64,
+              mimeType,
             },
-            {
-              text: prompt,
-            },
-          ],
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.3,
           },
+          {
+            text: prompt,
+          },
+        ];
+
+        const text = await generateGeminiContentWithFallback(ai, contents, {
+          temperature: 0.3,
+          responseMimeType: 'application/json',
+          isVision: true,
         });
-        const text = response.text || '';
 
         let parsed: any;
         try {
