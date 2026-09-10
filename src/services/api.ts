@@ -1,4 +1,4 @@
-import { FloorPlanResult, SavedProject, User } from '../types';
+import { FloorPlanResult, InteriorDesignResult, SavedProject, User } from '../types';
 
 const API_BASE = '/api';
 
@@ -165,6 +165,25 @@ export async function generateFloorPlanApi(params: {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to generate floor plan' }));
     throw new Error(err.error || 'Failed to generate floor plan');
+  }
+  return res.json();
+}
+
+export async function generateInteriorApi(params: {
+  roomWidth: number;
+  roomLength: number;
+  style: string;
+  budget: string;
+  roomType: string;
+}): Promise<InteriorDesignResult> {
+  const res = await fetch(`${API_BASE}/gemini/interior`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to generate interior design' }));
+    throw new Error(err.error || 'Failed to generate interior design');
   }
   return res.json();
 }

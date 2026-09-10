@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { FloorPlanResult, SavedProject, User, WorkflowType } from './types';
+import {
+  DesignStyle,
+  FloorPlanResult,
+  InteriorDesignResult,
+  SavedProject,
+  User,
+  WorkflowType,
+} from './types';
 import {
   getCurrentUser,
   getStoredUser,
@@ -12,6 +19,7 @@ import { NavigationSidebar } from './components/NavigationSidebar';
 import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
 import { FloorPlanWorkflow } from './components/FloorPlanWorkflow';
+import { InteriorDesignWorkflow } from './components/InteriorDesignWorkflow';
 import { Menu, ArrowLeft, Layers, Box, Check, X } from 'lucide-react';
 
 export default function App() {
@@ -25,8 +33,11 @@ export default function App() {
   const [projects, setProjects] = useState<SavedProject[]>([]);
   const [loadingProjects, setLoadingProjects] = useState<boolean>(false);
 
+  // Selected preset style passed from Dashboard ideabooks to Interior workflow
+  const [selectedInteriorStyle, setSelectedInteriorStyle] = useState<DesignStyle>('japandi');
+
   // Active 3D Visualization Payload (rendered once the 3D Studio lands)
-  const [active3DData, setActive3DData] = useState<FloorPlanResult | null>(null);
+  const [active3DData, setActive3DData] = useState<FloorPlanResult | InteriorDesignResult | null>(null);
   const [active3DType, setActive3DType] = useState<'floorplan' | 'interior' | 'renovation'>('floorplan');
   const [active3DTitle, setActive3DTitle] = useState<string>('Parametric Design Studio');
 
@@ -117,6 +128,24 @@ export default function App() {
     });
     setSaveTitle(`${result.plotWidth}x${result.plotLength}m ${result.architecturalStyle || 'Floor Plan'}`);
     setSaveDescription(result.designNotes || `${result.rooms.length} room architectural layout.`);
+    setSaveModalOpen(true);
+  };
+
+  const handleViewInterior3D = (result: InteriorDesignResult) => {
+    setActive3DData(result);
+    setActive3DType('interior');
+    setActive3DTitle(`${result.style} Interior Scheme`);
+    setActiveTab('3d-studio');
+  };
+
+  const triggerSaveInterior = (result: InteriorDesignResult) => {
+    setPendingSaveData({
+      data: result,
+      type: 'interior',
+      defaultTitle: `${result.style} ${result.roomWidth}x${result.roomLength}m Concept`,
+    });
+    setSaveTitle(`${result.style} ${result.roomWidth}x${result.roomLength}m Concept`);
+    setSaveDescription(result.designPhilosophy || 'Personalized interior curation.');
     setSaveModalOpen(true);
   };
 
@@ -258,7 +287,10 @@ export default function App() {
               onOpenProject={() => setActiveTab('3d-studio')}
               onDeleteProject={handleDeleteProject}
               onOpen3D={() => setActiveTab('3d-studio')}
-              onSelectStylePreset={() => setActiveTab('interior')}
+              onSelectStylePreset={(style) => {
+                setSelectedInteriorStyle(style);
+                setActiveTab('interior');
+              }}
               onOpenAuth={openAuthWithMode}
             />
           )}
@@ -271,7 +303,16 @@ export default function App() {
             />
           )}
 
-          {(activeTab === 'interior' || activeTab === 'reconstruction' || activeTab === '3d-studio') && (
+          {activeTab === 'interior' && (
+            <InteriorDesignWorkflow
+              onView3D={handleViewInterior3D}
+              onSaveProject={triggerSaveInterior}
+              onBackToHome={() => setActiveTab('dashboard')}
+              initialStyle={selectedInteriorStyle}
+            />
+          )}
+
+          {(activeTab === 'reconstruction' || activeTab === '3d-studio') && (
             <div className="flex items-center justify-center py-24 text-sm text-stone-400">
               <div className="flex items-center gap-2">
                 <Box className="w-4 h-4" />

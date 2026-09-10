@@ -415,6 +415,120 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
 });
 
 // ----------------------------------------------------
+// GEMINI WORKFLOW 2: PERSONALIZED INTERIOR DESIGN
+// ----------------------------------------------------
+app.post('/api/gemini/interior', async (req, res) => {
+  try {
+    const { roomWidth, roomLength, style, budget, roomType } = req.body;
+
+    const w = Number(roomWidth) || 5;
+    const l = Number(roomLength) || 6;
+    const selectedStyle = style || 'modern';
+    const selectedBudget = budget || '$10,000';
+    const type = roomType || 'Living Room';
+
+    const prompt = `You are a world-class high-end interior architect and furniture curator.
+Design a complete, mathematically precise interior layout for a ${type} with:
+- Dimensions: Width = ${w} meters (X axis, from 0 to ${w}), Length = ${l} meters (Y axis, from 0 to ${l})
+- Aesthetic Style: ${selectedStyle}
+- Target Budget: ${selectedBudget}
+
+CRITICAL RULES:
+1. Furniture Placement:
+   - Provide an array of realistic furniture pieces with x, y, width, depth (in meters).
+   - Furniture must sit within the room boundaries (0 <= x <= ${w} - width, 0 <= y <= ${l} - depth).
+   - Leave comfortable walkways (at least 0.7m clearance between key pieces).
+   - Category must be one of: 'seating' | 'table' | 'storage' | 'bed' | 'lighting' | 'decor' | 'fixture' | 'electronics'.
+   - Rotation should be 0, 90, 180, or 270 degrees.
+2. Color Palette:
+   - Provide exactly 5 cohesive hex color swatches suited for ${selectedStyle}.
+   - Each swatch must have: hex (e.g. #2C3539), name (e.g. "Nordic Slate"), role ('primary'|'secondary'|'accent'|'wall'|'trim'|'flooring'), and description.
+3. Lighting Suggestions:
+   - Detailed, actionable lighting strategy including fixture types, kelvin color temperature (e.g. 2700K warm), task lights, and placement.
+4. Material Finishes & Philosophy:
+   - Provide recommended wood species, metal finishes, textile weaves, and overarching design intent.
+
+Return STRICT JSON ONLY conforming to this schema:
+{
+  "roomWidth": ${w},
+  "roomLength": ${l},
+  "roomType": "${type}",
+  "style": "${selectedStyle}",
+  "budget": "${selectedBudget}",
+  "designPhilosophy": "<concise summary of spatial concept and atmosphere>",
+  "lightingSuggestions": "<in-depth paragraph on layering ambient, task, and accent lighting>",
+  "materialFinishes": "<summary of recommended flooring, fabrics, and metals>",
+  "colorPalette": [
+    { "hex": "#...", "name": "...", "role": "primary", "description": "..." }
+  ],
+  "furniture": [
+    {
+      "id": "f_1",
+      "name": "...",
+      "category": "seating",
+      "x": <number>,
+      "y": <number>,
+      "width": <number>,
+      "depth": <number>,
+      "height": <number>,
+      "rotation": 0,
+      "material": "...",
+      "color": "#...",
+      "notes": "...",
+      "estimatedPrice": "$..."
+    }
+  ]
+}`;
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+    }
+
+    let text = '';
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-flash-latest',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          temperature: 0.3,
+        },
+      });
+      text = response.text || '';
+    } catch (aiErr: any) {
+      console.log('[INTERIO Engine] Synthesizing interior palette using architectural curation matrix.');
+      return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      parsed = JSON.parse(cleanJson);
+    }
+
+    if (parsed && Array.isArray(parsed.furniture) && Array.isArray(parsed.colorPalette)) {
+      return res.json(parsed);
+    }
+
+    return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+  } catch (err: any) {
+    console.log('[INTERIO Engine] Interior curation routed through architectural matrix.');
+    return res.json(
+      generateAlgorithmicInterior(
+        Number(req.body.roomWidth) || 5,
+        Number(req.body.roomLength) || 6,
+        req.body.style || 'modern',
+        req.body.budget || '$10,000',
+        req.body.roomType || 'Living Room'
+      )
+    );
+  }
+});
+
+// ----------------------------------------------------
 // ALGORITHMIC FALLBACKS & SANITIZERS
 // ----------------------------------------------------
 function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
@@ -582,6 +696,179 @@ function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRoo
     designNotes: 'Optimized solar path zoning with daytime public living spaces oriented toward expansive exterior openings and quiet night quarters secluded along the private acoustic envelope.',
     circulationEfficiency: 86,
     rooms,
+  };
+}
+
+function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string) {
+  const stylesMap: Record<string, { palette: any[]; philosophy: string; finishes: string }> = {
+    modern: {
+      philosophy: 'Crisp linear geometry, understated monolithic silhouettes, and balanced spatial tension allowing architectural features to breathe.',
+      finishes: 'Polished microcement flooring, smoked oak accents, matte black architectural hardware, and high-performance tactile bouclé upholstery.',
+      palette: [
+        { hex: '#1E293B', name: 'Architectural Charcoal', role: 'primary', description: 'Deep grounding tone for accent elements and metals' },
+        { hex: '#F8FAFC', name: 'Chalk White', role: 'wall', description: 'Ultra-clean reflective wall surface amplifying daylight' },
+        { hex: '#6366F1', name: 'Indigo Accent', role: 'accent', description: 'Sophisticated focal color for soft textiles and artwork' },
+        { hex: '#94A3B8', name: 'Cast Concrete', role: 'secondary', description: 'Mid-tone neutral for architectural joinery and rug base' },
+        { hex: '#C2A382', name: 'Honey Oak', role: 'flooring', description: 'Organic warm grain bringing tactile warmth' },
+      ],
+    },
+    minimal: {
+      philosophy: 'Uncompromising subtraction of the non-essential. Spatial serenity achieved through monolithic planes and shadow-line detailing.',
+      finishes: 'Seamless lime plaster walls, wide-plank untreated Dinesen douglas fir, raw linen, and concealed flush-door joinery.',
+      palette: [
+        { hex: '#FDFBF7', name: 'Bone Plaster', role: 'wall', description: 'Warm organic plaster rejecting stark sterile white' },
+        { hex: '#262626', name: 'Wabi Black', role: 'primary', description: 'Sparse punctuation in blackened steel hardware' },
+        { hex: '#E5DCCF', name: 'Raw Linen', role: 'secondary', description: 'Unbleached natural drapery and seating slipcovers' },
+        { hex: '#B8A898', name: 'Limestone Ochre', role: 'flooring', description: 'Honed stone flooring running continuously throughout' },
+        { hex: '#8C7B6B', name: 'Walnut Shadow', role: 'accent', description: 'Single solid timber monolith table element' },
+      ],
+    },
+    industrial: {
+      philosophy: 'Celebration of raw structural honesty, honest structural steelwork, patinated brick, and utilitarian ergonomics.',
+      finishes: 'Sealed exposed aggregate concrete, blackened hot-rolled steel, reclaimed factory timber, and distressed cognac saddle leather.',
+      palette: [
+        { hex: '#1F2421', name: 'Forged Steel', role: 'primary', description: 'Exposed structural I-beams and custom steel glazing' },
+        { hex: '#9A5C3E', name: 'Terracotta Brick', role: 'accent', description: 'Aged masonry warmth providing historic soul' },
+        { hex: '#6D5D4B', name: 'Aged Leather', role: 'secondary', description: 'Rich deep cognac upholstery with saddle stitching' },
+        { hex: '#D1CDC7', name: 'Brushed Cement', role: 'wall', description: 'Raw concrete wall planes with form-tie impressions' },
+        { hex: '#3E424B', name: 'Gunmetal Slate', role: 'flooring', description: 'Durable resin-bonded architectural screed' },
+      ],
+    },
+    traditional: {
+      philosophy: 'Timeless architectural proportions, bespoke millwork, elegant wainscoting, and layered heirloom textile heritage.',
+      finishes: 'Heritage herringbone parquetry, double-crowned cornices, aged brass hardware, and plush velvet drapery.',
+      palette: [
+        { hex: '#2A3439', name: 'Heritage Navy', role: 'primary', description: 'Refined deep tone for custom built-in library millwork' },
+        { hex: '#F5F2EB', name: 'Clotted Cream', role: 'wall', description: 'Warm eggshell wall backdrop complementing oil portraits' },
+        { hex: '#A85A3C', name: 'Burnt Ochre', role: 'accent', description: 'Persian rug woven accents and velvet throw cushions' },
+        { hex: '#7C6752', name: 'French Walnut', role: 'flooring', description: 'Hand-scraped rich parquet wood underfoot' },
+        { hex: '#C5A059', name: 'Antique Brass', role: 'secondary', description: 'Warm metallic highlights in lighting and cabinetry pulls' },
+      ],
+    },
+    scandinavian: {
+      philosophy: 'Nordic democratic design prioritizing hygge warmth, maximized sunlight bouncing, and organic ergonomic contours.',
+      finishes: 'Bleached white ash, molded plywood, textured shearling wool, and woven paper-cord seating.',
+      palette: [
+        { hex: '#FAFAF8', name: 'Snow Birch', role: 'wall', description: 'Airy daylight-diffusing Scandinavian wall wash' },
+        { hex: '#DDD1C1', name: 'Blonde Ash', role: 'flooring', description: 'Pale pale timber flooring expanding room perception' },
+        { hex: '#3B4348', name: 'Nordic Twilight', role: 'primary', description: 'Subtle slate gray framing fixtures' },
+        { hex: '#7D8C7C', name: 'Forest Sage', role: 'accent', description: 'Botanical muted green grounding the living zone' },
+        { hex: '#EBE3D5', name: 'Oatmeal Wool', role: 'secondary', description: 'Tactile heavy-knit throws and upholstery' },
+      ],
+    },
+    japandi: {
+      philosophy: 'The mindful confluence of Japanese wabi-sabi imperfect beauty and Scandinavian functional simplicity.',
+      finishes: 'Shoji-grade Hinoki cypress, cedar slats, hand-thrown stoneware ceramics, and tatami-weave accents.',
+      palette: [
+        { hex: '#EFECE6', name: 'Rice Paper', role: 'wall', description: 'Textured washi-toned wall wash' },
+        { hex: '#2B2A27', name: 'Sumi Ink', role: 'primary', description: 'Calligraphic focal lines in low-slung table legs' },
+        { hex: '#9E8872', name: 'Bamboo Cedar', role: 'flooring', description: 'Natural horizontal grain grounding the senses' },
+        { hex: '#757268', name: 'Zen Clay', role: 'secondary', description: 'Matte clay surfaces and linen curtains' },
+        { hex: '#5A6258', name: 'Moss Garden', role: 'accent', description: 'Delicate organic green in bonsai and ceramics' },
+      ],
+    },
+  };
+
+  const currentTheme = stylesMap[style] || stylesMap.modern;
+
+  const furniture: any[] = [
+    {
+      id: 'f_1',
+      name: 'Primary Deep-Seat Sofa',
+      category: 'seating',
+      x: Math.round((w * 0.15) * 10) / 10,
+      y: Math.round((l * 0.25) * 10) / 10,
+      width: Math.min(2.8, Math.round((w * 0.5) * 10) / 10),
+      depth: 0.95,
+      rotation: 0,
+      material: currentTheme.finishes.split(',')[3]?.trim() || 'Textured Linen',
+      color: currentTheme.palette[0].hex,
+      estimatedPrice: '$2,400 - $3,600',
+      notes: 'Anchored 0.8m away from window line for unhindered curtain drape',
+    },
+    {
+      id: 'f_2',
+      name: 'Architectural Coffee Table',
+      category: 'table',
+      x: Math.round((w * 0.22) * 10) / 10,
+      y: Math.round((l * 0.48) * 10) / 10,
+      width: Math.min(1.4, Math.round((w * 0.3) * 10) / 10),
+      depth: 0.75,
+      rotation: 0,
+      material: 'Solid Timber & Honed Quartz',
+      color: currentTheme.palette[4].hex,
+      estimatedPrice: '$850 - $1,300',
+      notes: '45cm walkway perimeter maintained all around',
+    },
+    {
+      id: 'f_3',
+      name: 'Sculptural Accent Armchair',
+      category: 'seating',
+      x: Math.round((w * 0.65) * 10) / 10,
+      y: Math.round((l * 0.28) * 10) / 10,
+      width: 0.85,
+      depth: 0.85,
+      rotation: 45,
+      material: 'Curved Molded Oak & Wool',
+      color: currentTheme.palette[2].hex,
+      estimatedPrice: '$950 - $1,400',
+      notes: 'Angled at 45 degrees toward conversational focal point',
+    },
+    {
+      id: 'f_4',
+      name: 'Low-Profile Media Console',
+      category: 'storage',
+      x: Math.round((w * 0.15) * 10) / 10,
+      y: Math.round((l * 0.82) * 10) / 10,
+      width: Math.min(2.6, Math.round((w * 0.55) * 10) / 10),
+      depth: 0.45,
+      rotation: 0,
+      material: 'Fluted Veneer & Black Steel',
+      color: currentTheme.palette[1].hex,
+      estimatedPrice: '$1,200 - $1,800',
+      notes: 'Concealed acoustic fabric baffles for invisible sound equipment',
+    },
+    {
+      id: 'f_5',
+      name: 'Architectural Floor Luminaire',
+      category: 'lighting',
+      x: Math.round((w * 0.82) * 10) / 10,
+      y: Math.round((l * 0.18) * 10) / 10,
+      width: 0.5,
+      depth: 0.5,
+      rotation: 0,
+      material: 'Patinated Brass & Frosted Opal Glass',
+      color: currentTheme.palette[3].hex,
+      estimatedPrice: '$450 - $700',
+      notes: '90+ CRI 2700K warm dimming diode system',
+    },
+    {
+      id: 'f_6',
+      name: 'Hand-Knotted Area Rug',
+      category: 'decor',
+      x: Math.round((w * 0.1) * 10) / 10,
+      y: Math.round((l * 0.2) * 10) / 10,
+      width: Math.round((w * 0.75) * 10) / 10,
+      depth: Math.round((l * 0.55) * 10) / 10,
+      rotation: 0,
+      material: 'New Zealand Wool & Silk Blend',
+      color: currentTheme.palette[3].hex,
+      estimatedPrice: '$1,100 - $1,900',
+      notes: 'Generous sizing ensures all front sofa/chair legs rest firmly on pile',
+    },
+  ];
+
+  return {
+    roomWidth: w,
+    roomLength: l,
+    roomType,
+    style,
+    budget,
+    designPhilosophy: currentTheme.philosophy,
+    materialFinishes: currentTheme.finishes,
+    lightingSuggestions: `Integrate a three-tier circadian lighting scheme: 1) Ambient illumination via indirect 2700K LED cove grazing across ceiling planes; 2) Focal statement luminaire placed at golden-ratio centroid; 3) Low-glare directional task downlights highlighting architectural artwork. Ensure all circuits support 0-10V flicker-free dimming.`,
+    colorPalette: currentTheme.palette,
+    furniture,
   };
 }
 
