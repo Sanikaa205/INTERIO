@@ -1,4 +1,4 @@
-import { SavedProject, User } from '../types';
+import { FloorPlanResult, SavedProject, User } from '../types';
 
 const API_BASE = '/api';
 
@@ -148,3 +148,23 @@ export async function deleteProject(id: string): Promise<boolean> {
 export const fetchProjectsApi = fetchProjects;
 export const saveProjectApi = createProject;
 export const deleteProjectApi = deleteProject;
+
+// ----------------------------------------------------
+// GEMINI WORKFLOW SERVICES
+// ----------------------------------------------------
+export async function generateFloorPlanApi(params: {
+  plotWidth: number;
+  plotLength: number;
+  rooms: { name: string; type: string; minSize: number }[];
+}): Promise<FloorPlanResult> {
+  const res = await fetch(`${API_BASE}/gemini/floorplan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to generate floor plan' }));
+    throw new Error(err.error || 'Failed to generate floor plan');
+  }
+  return res.json();
+}

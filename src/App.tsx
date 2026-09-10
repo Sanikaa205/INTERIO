@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { SavedProject, User } from './types';
+import { FloorPlanResult, SavedProject, User, WorkflowType } from './types';
 import {
   getCurrentUser,
   getStoredUser,
   fetchProjectsApi,
+  saveProjectApi,
   deleteProjectApi,
   logoutApi,
 } from './services/api';
 import { NavigationSidebar } from './components/NavigationSidebar';
 import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
-import { Menu, ArrowLeft, Layers, Box } from 'lucide-react';
+import { FloorPlanWorkflow } from './components/FloorPlanWorkflow';
+import { Menu, ArrowLeft, Layers, Box, Check, X } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -22,6 +24,23 @@ export default function App() {
 
   const [projects, setProjects] = useState<SavedProject[]>([]);
   const [loadingProjects, setLoadingProjects] = useState<boolean>(false);
+
+  // Active 3D Visualization Payload (rendered once the 3D Studio lands)
+  const [active3DData, setActive3DData] = useState<FloorPlanResult | null>(null);
+  const [active3DType, setActive3DType] = useState<'floorplan' | 'interior' | 'renovation'>('floorplan');
+  const [active3DTitle, setActive3DTitle] = useState<string>('Parametric Design Studio');
+
+  // Save Project Modal State
+  const [saveModalOpen, setSaveModalOpen] = useState<boolean>(false);
+  const [pendingSaveData, setPendingSaveData] = useState<{
+    data: any;
+    type: WorkflowType;
+    defaultTitle: string;
+  } | null>(null);
+  const [saveTitle, setSaveTitle] = useState<string>('');
+  const [saveDescription, setSaveDescription] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [saveSuccessToast, setSaveSuccessToast] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -80,6 +99,49 @@ export default function App() {
       setProjects(projects.filter((p) => p.id !== projectId));
     } catch (err) {
       console.error('Failed to delete project', err);
+    }
+  };
+
+  const handleViewFloorPlan3D = (result: FloorPlanResult) => {
+    setActive3DData(result);
+    setActive3DType('floorplan');
+    setActive3DTitle(result.architecturalStyle || 'Floor Plan Blueprint');
+    setActiveTab('3d-studio');
+  };
+
+  const triggerSaveFloorPlan = (result: FloorPlanResult) => {
+    setPendingSaveData({
+      data: result,
+      type: 'floorplan',
+      defaultTitle: `${result.plotWidth}x${result.plotLength}m ${result.architecturalStyle || 'Floor Plan'}`,
+    });
+    setSaveTitle(`${result.plotWidth}x${result.plotLength}m ${result.architecturalStyle || 'Floor Plan'}`);
+    setSaveDescription(result.designNotes || `${result.rooms.length} room architectural layout.`);
+    setSaveModalOpen(true);
+  };
+
+  const handleConfirmSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingSaveData) return;
+
+    setIsSaving(true);
+    try {
+      const saved = await saveProjectApi({
+        title: saveTitle.trim() || pendingSaveData.defaultTitle,
+        type: pendingSaveData.type,
+        description: saveDescription,
+        data: pendingSaveData.data,
+      });
+
+      setProjects([saved, ...projects]);
+      setSaveModalOpen(false);
+      setSaveSuccessToast(`Saved "${saved.title}" successfully!`);
+      setTimeout(() => setSaveSuccessToast(null), 3000);
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || 'Failed to save project');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -201,7 +263,15 @@ export default function App() {
             />
           )}
 
-          {activeTab !== 'dashboard' && (
+          {activeTab === 'floorplan' && (
+            <FloorPlanWorkflow
+              onView3D={handleViewFloorPlan3D}
+              onSaveProject={triggerSaveFloorPlan}
+              onBackToHome={() => setActiveTab('dashboard')}
+            />
+          )}
+
+          {(activeTab === 'interior' || activeTab === 'reconstruction' || activeTab === '3d-studio') && (
             <div className="flex items-center justify-center py-24 text-sm text-stone-400">
               <div className="flex items-center gap-2">
                 <Box className="w-4 h-4" />
@@ -211,6 +281,80 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Save Project Modal */}
+      {saveModalOpen && (
+        <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-stone-200/90 max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-stone-900">Save to Portfolio</h3>
+                <p className="text-xs text-stone-500 mt-0.5">
+                  Save your parameters, layout coordinates, and design notes.
+                </p>
+              </div>
+              <button
+                onClick={() => setSaveModalOpen(false)}
+                className="p-1 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmSave} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-medium text-stone-700 mb-1">Project Title</label>
+                <input
+                  type="text"
+                  required
+                  value={saveTitle}
+                  onChange={(e) => setSaveTitle(e.target.value)}
+                  placeholder="e.g. Modern Coastal Villa"
+                  className="w-full px-3 py-2 bg-stone-50/50 border border-stone-200 rounded-lg text-xs font-medium text-stone-900 focus:bg-white focus:border-stone-900 outline-hidden transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-stone-700 mb-1">
+                  Description / Design Notes
+                </label>
+                <textarea
+                  rows={3}
+                  value={saveDescription}
+                  onChange={(e) => setSaveDescription(e.target.value)}
+                  placeholder="Optional architectural or finish notes..."
+                  className="w-full px-3 py-2 bg-stone-50/50 border border-stone-200 rounded-lg text-xs text-stone-900 focus:bg-white focus:border-stone-900 outline-hidden resize-none transition-colors"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSaveModalOpen(false)}
+                  className="px-3.5 py-2 text-xs font-medium text-stone-600 hover:bg-stone-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="px-4 py-2 text-xs font-medium text-white bg-stone-900 hover:bg-stone-800 disabled:bg-stone-300 rounded-lg transition-colors flex items-center gap-1.5"
+                >
+                  {isSaving ? 'Saving...' : 'Save Project'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Global Success Toast */}
+      {saveSuccessToast && (
+        <div className="fixed bottom-6 right-6 bg-stone-900 text-white px-4 py-2.5 rounded-full text-xs font-medium shadow-lg flex items-center gap-2 z-50">
+          <Check className="w-3.5 h-3.5 text-emerald-400" />
+          <span>{saveSuccessToast}</span>
+        </div>
+      )}
     </div>
   );
 }
