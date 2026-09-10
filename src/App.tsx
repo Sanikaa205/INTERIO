@@ -22,6 +22,7 @@ import { Dashboard } from './components/Dashboard';
 import { FloorPlanWorkflow } from './components/FloorPlanWorkflow';
 import { InteriorDesignWorkflow } from './components/InteriorDesignWorkflow';
 import { ReconstructionWorkflow } from './components/ReconstructionWorkflow';
+import { Shared3DView } from './components/Shared3DView';
 import { Menu, ArrowLeft, Layers, Box, Check, X } from 'lucide-react';
 
 export default function App() {
@@ -114,6 +115,25 @@ export default function App() {
       setProjects(projects.filter((p) => p.id !== projectId));
     } catch (err) {
       console.error('Failed to delete project', err);
+    }
+  };
+
+  const handleOpenProject = (project: SavedProject) => {
+    if (project.type === 'floorplan') {
+      setActive3DData(project.data as FloorPlanResult);
+      setActive3DType('floorplan');
+      setActive3DTitle(project.title);
+      setActiveTab('3d-studio');
+    } else if (project.type === 'interior') {
+      setActive3DData(project.data as InteriorDesignResult);
+      setActive3DType('interior');
+      setActive3DTitle(project.title);
+      setActiveTab('3d-studio');
+    } else if (project.type === 'renovation') {
+      setActive3DData(project.data as ReconstructionData);
+      setActive3DType('renovation');
+      setActive3DTitle(project.title);
+      setActiveTab('3d-studio');
     }
   };
 
@@ -259,6 +279,19 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('3d-studio')}
+              className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                activeTab === '3d-studio'
+                  ? 'bg-stone-900 text-white'
+                  : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-50'
+              }`}
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>3D Studio</span>
+            </button>
+
             {activeTab !== 'dashboard' && (
               <button
                 type="button"
@@ -306,7 +339,7 @@ export default function App() {
               user={currentUser}
               projects={projects}
               onNavigateWorkflow={(wf) => setActiveTab(wf)}
-              onOpenProject={() => setActiveTab('3d-studio')}
+              onOpenProject={handleOpenProject}
               onDeleteProject={handleDeleteProject}
               onOpen3D={() => setActiveTab('3d-studio')}
               onSelectStylePreset={(style) => {
@@ -343,12 +376,25 @@ export default function App() {
           )}
 
           {activeTab === '3d-studio' && (
-            <div className="flex items-center justify-center py-24 text-sm text-stone-400">
-              <div className="flex items-center gap-2">
-                <Box className="w-4 h-4" />
-                <span>This workflow is still under construction.</span>
-              </div>
-            </div>
+            <Shared3DView
+              data={active3DData}
+              projectType={active3DType}
+              projectTitle={active3DTitle}
+              onBack={() => {
+                if (active3DType === 'floorplan') setActiveTab('floorplan');
+                else if (active3DType === 'interior') setActiveTab('interior');
+                else if (active3DType === 'renovation') setActiveTab('reconstruction');
+                else setActiveTab('dashboard');
+              }}
+              onBackToHome={() => setActiveTab('dashboard')}
+              onSaveProject={() => {
+                if (active3DData) {
+                  if (active3DType === 'floorplan') triggerSaveFloorPlan(active3DData as FloorPlanResult);
+                  else if (active3DType === 'interior') triggerSaveInterior(active3DData as InteriorDesignResult);
+                  else triggerSaveReconstruction(active3DData as ReconstructionData);
+                }
+              }}
+            />
           )}
         </main>
       </div>
