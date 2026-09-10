@@ -1,20 +1,23 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# INTERIO
 
-# Run and deploy your AI Studio app
+AI-powered architectural platform unifying floor plan generation, personalized interior design, and existing house reconstruction.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/fbd7a331-2f13-419f-8e74-517b2082b549
+- **CAD Floor Plans** — generate non-overlapping 2D room layouts from plot dimensions and room requirements.
+- **Interior Design** — curate furniture layouts, color palettes, and lighting plans for a room and style.
+- **Room Renovation** — upload a photo of an existing room and get a structural analysis and renovation design.
+- **3D Studio** — view any generated design in an interactive 3D scene.
+- Save and manage projects in a personal portfolio.
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
+**Prerequisites:** Node.js
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy `.env.example` to `.env` and set `GEMINI_API_KEY` to your Gemini API key. Without a key, each workflow falls back to a deterministic algorithmic generator.
 3. Run the app:
    `npm run dev`
+
+The app runs on `http://localhost:3000`.

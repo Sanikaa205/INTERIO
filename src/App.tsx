@@ -253,10 +253,14 @@ export default function App() {
         onOpenAuth={openAuthWithMode}
       />
 
+      {/* Main Content Area (Offset by 64 (16rem) on large screens for sidebar) */}
       <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
+        {/* Top Header Bar - Clean and Understated */}
         <header className="sticky top-0 z-30 h-16 bg-white/80 backdrop-blur-md border-b border-stone-200/70 px-4 sm:px-8 flex items-center justify-between">
           <div className="flex items-center gap-3">
+            {/* Mobile Hamburger toggle */}
             <button
+              id="btn-mobile-sidebar-toggle"
               type="button"
               onClick={() => setMobileOpen(true)}
               className="lg:hidden p-2 rounded-lg text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition-colors"
@@ -265,8 +269,10 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
 
+            {/* INTERIO Brand Logo button that returns to Home (on mobile only, since sidebar has it on desktop) */}
             <button
               type="button"
+              id="btn-brand-home"
               onClick={() => setActiveTab('dashboard')}
               className="lg:hidden flex items-center gap-2 text-left cursor-pointer"
               title="Return to Dashboard"
@@ -274,11 +280,42 @@ export default function App() {
               <div className="w-7 h-7 rounded-lg bg-stone-900 flex items-center justify-center text-white">
                 <Layers className="w-4 h-4" />
               </div>
-              <span className="font-semibold text-sm tracking-tight text-stone-900">INTERIO</span>
+              <span className="font-semibold text-sm tracking-tight text-stone-900">
+                INTERIO
+              </span>
             </button>
+
+            {/* Clean Breadcrumb Indicator */}
+            <div className="hidden sm:flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                id="btn-breadcrumb-home"
+                onClick={() => setActiveTab('dashboard')}
+                className={`font-medium px-2 py-1 rounded-md transition-colors ${
+                  activeTab === 'dashboard'
+                    ? 'text-stone-900 font-semibold'
+                    : 'text-stone-400 hover:text-stone-700'
+                }`}
+              >
+                Dashboard
+              </button>
+              {activeTab !== 'dashboard' && (
+                <>
+                  <span className="text-stone-300">/</span>
+                  <span className="font-medium text-stone-900">
+                    {activeTab === 'floorplan' && 'CAD Floor Plans'}
+                    {activeTab === 'interior' && 'Interior Design'}
+                    {activeTab === 'reconstruction' && 'Room Renovation'}
+                    {activeTab === '3d-studio' && '3D Studio'}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
 
+          {/* Right Action Bar */}
           <div className="flex items-center gap-2">
+            {/* 3D studio launcher button */}
             <button
               type="button"
               onClick={() => setActiveTab('3d-studio')}
@@ -292,8 +329,10 @@ export default function App() {
               <span>3D Studio</span>
             </button>
 
+            {/* Back to Home if in workflow */}
             {activeTab !== 'dashboard' && (
               <button
+                id="btn-nav-back-home"
                 type="button"
                 onClick={() => setActiveTab('dashboard')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-medium transition-colors"
@@ -303,6 +342,7 @@ export default function App() {
               </button>
             )}
 
+            {/* Auth Buttons or User Profile in Top Bar */}
             {currentUser ? (
               <div className="flex items-center gap-2 pl-2 sm:border-l sm:border-stone-200">
                 <div className="w-7 h-7 rounded-full bg-stone-900 text-white flex items-center justify-center font-medium text-xs">
@@ -316,6 +356,7 @@ export default function App() {
               <div className="flex items-center gap-1.5 pl-2 sm:border-l sm:border-stone-200">
                 <button
                   type="button"
+                  id="btn-header-login"
                   onClick={() => openAuthWithMode('login')}
                   className="px-2.5 py-1.5 text-xs font-medium text-stone-600 hover:text-stone-900 rounded-lg transition-colors"
                 >
@@ -323,6 +364,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  id="btn-header-signup"
                   onClick={() => openAuthWithMode('signup')}
                   className="px-3 py-1.5 text-xs font-medium bg-stone-900 hover:bg-stone-800 text-white rounded-lg transition-colors"
                 >
@@ -333,6 +375,7 @@ export default function App() {
           </div>
         </header>
 
+        {/* Main View Area */}
         <main className="flex-1">
           {activeTab === 'dashboard' && (
             <Dashboard
