@@ -19,6 +19,14 @@ interface InteriorDesignWorkflowProps {
   onSaveProject: (result: InteriorDesignResult) => void;
   onBackToHome?: () => void;
   initialStyle?: DesignStyle;
+  // Result carried back from the 3D Studio (e.g. after moving furniture
+  // there), so re-opening this workflow shows the latest edited layout
+  // instead of resetting to blank.
+  initialResult?: InteriorDesignResult | null;
+  // Shared with the 3D Studio so selecting a piece in one view is reflected
+  // in the other.
+  selectedFurnitureId?: string | null;
+  onSelectFurniture?: (id: string | null) => void;
 }
 
 const STYLE_OPTIONS: {
@@ -77,6 +85,9 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   onSaveProject,
   onBackToHome,
   initialStyle,
+  initialResult = null,
+  selectedFurnitureId = null,
+  onSelectFurniture,
 }) => {
   // Form State
   const [roomWidth, setRoomWidth] = useState<number>(5.5);
@@ -95,10 +106,9 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   // UI State
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationStep, setGenerationStep] = useState<string>('');
-  const [result, setResult] = useState<InteriorDesignResult | null>(null);
+  const [result, setResult] = useState<InteriorDesignResult | null>(initialResult);
   const [error, setError] = useState<string | null>(null);
   const [copiedHex, setCopiedHex] = useState<string | null>(null);
-  const [selectedFurnitureId, setSelectedFurnitureId] = useState<string | null>(null);
 
   // Submit to Gemini API
   const handleSubmit = async (e: React.FormEvent) => {
@@ -131,7 +141,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
 
       setResult(generated);
       if (generated.furniture && generated.furniture.length > 0) {
-        setSelectedFurnitureId(generated.furniture[0].id);
+        onSelectFurniture?.(generated.furniture[0].id);
       }
     } catch (err: any) {
       console.error(err);
@@ -443,7 +453,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                       return (
                         <g
                           key={item.id}
-                          onClick={() => setSelectedFurnitureId(item.id)}
+                          onClick={() => onSelectFurniture?.(item.id)}
                           className="cursor-pointer"
                         >
                           <rect
@@ -550,7 +560,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                   return (
                     <div
                       key={item.id}
-                      onClick={() => setSelectedFurnitureId(item.id)}
+                      onClick={() => onSelectFurniture?.(item.id)}
                       className={`p-3.5 rounded-xl border transition-colors cursor-pointer ${
                         isSelected
                           ? 'border-stone-900 bg-stone-50'

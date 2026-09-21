@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
   FloorPlanResult,
+  FurnitureItem,
   InteriorDesignResult,
   ReconstructionData,
   SavedProject,
@@ -19,6 +21,9 @@ import {
   Box,
   Check,
   Home,
+  Move,
+  RotateCw,
+  X,
 } from 'lucide-react';
 
 interface Shared3DViewProps {
@@ -28,6 +33,9 @@ interface Shared3DViewProps {
   onBack: () => void;
   onBackToHome?: () => void;
   onSaveProject: () => void;
+  selectedFurnitureId?: string | null;
+  onSelectFurniture?: (id: string | null) => void;
+  onFurnitureChange?: (furniture: FurnitureItem[]) => void;
 }
 
 export const Shared3DView: React.FC<Shared3DViewProps> = ({
@@ -37,6 +45,9 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   onBack,
   onBackToHome,
   onSaveProject,
+  selectedFurnitureId = null,
+  onSelectFurniture,
+  onFurnitureChange,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -55,8 +66,24 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // Manual Orbit controls tracking
   const isDragging = useRef(false);
   const previousMousePosition = useRef({ x: 0, y: 0 });
+  const pointerDownPosition = useRef({ x: 0, y: 0 });
   const cameraAngles = useRef({ theta: Math.PI / 4, phi: Math.PI / 3, radius: 18 });
   const targetLookAt = useRef(new THREE.Vector3(0, 0, 0));
+
+  // Furniture selection & transform editing (click-to-select + drag/rotate)
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
+  const transformControlsRef = useRef<TransformControls | null>(null);
+  const furnitureObjectsRef = useRef<THREE.Object3D[]>([]);
+  const furnitureDataRef = useRef<FurnitureItem[]>([]);
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const isTransformDragging = useRef(false);
+
+  // Keep the latest callbacks in refs so scene event listeners (registered
+  // once per scene rebuild) never call a stale closure.
+  const onFurnitureChangeRef = useRef(onFurnitureChange);
+  const onSelectFurnitureRef = useRef(onSelectFurniture);
+  onFurnitureChangeRef.current = onFurnitureChange;
+  onSelectFurnitureRef.current = onSelectFurniture;
 
   // Determine active data payload
   const floorPlanData = projectType === 'floorplan' ? (data as FloorPlanResult) : null;
@@ -103,8 +130,37 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     mountRef.current.innerHTML = '';
     mountRef.current.appendChild(renderer.domElement);
 
+    // Transform Controls: drag/rotate whichever furniture piece is selected
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControlsRef.current = transformControls;
+    applyTransformAxisVisibility(transformControls, transformMode);
+    transformControls.setMode(transformMode);
+    scene.add(transformControls.getHelper());
+
+    const handleDraggingChanged = (event: { value: unknown }) => {
+      isTransformDragging.current = Boolean(event.value);
+      if (!event.value) {
+        // Drag ended: push the committed furniture array up to the parent
+        // so Save / the 2D preview see the manual adjustment.
+        onFurnitureChangeRef.current?.(furnitureDataRef.current.map((f) => ({ ...f })));
+      }
+    };
+    const handleObjectChange = () => {
+      const object = transformControls.object;
+      const furnitureId = object?.userData.furnitureId;
+      if (object && furnitureId) {
+        applyTransformConstraints(object, furnitureId);
+      }
+    };
+    transformControls.addEventListener('dragging-changed', handleDraggingChanged);
+    transformControls.addEventListener('objectChange', handleObjectChange);
+
     // Build 3D models based on current data
     build3DScene(scene);
+
+    // Re-attach the gizmo to whichever furniture is currently selected
+    // (the scene/objects were just rebuilt, so prior object references are gone).
+    syncTransformSelection();
 
     // Setup Lighting
     setupLighting(scene);
@@ -134,12 +190,40 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     return () => {
       if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
       resizeObserver.disconnect();
+      transformControls.removeEventListener('dragging-changed', handleDraggingChanged);
+      transformControls.removeEventListener('objectChange', handleObjectChange);
+      transformControls.dispose();
+      transformControlsRef.current = null;
       if (rendererRef.current?.domElement && mountRef.current) {
         mountRef.current.innerHTML = '';
       }
       renderer.dispose();
     };
   }, [data, projectType, wallHeight, lightingMode, showWireframe]);
+
+  // Re-sync the gizmo when selection changes without a full scene rebuild
+  // (e.g. the user picked a different item in the 2D preview before
+  // switching to 3D, or clicked a furniture mesh here).
+  useEffect(() => {
+    syncTransformSelection();
+  }, [selectedFurnitureId]);
+
+  // Switch translate/rotate mode on the live TransformControls instance.
+  useEffect(() => {
+    const controls = transformControlsRef.current;
+    if (!controls) return;
+    controls.setMode(transformMode);
+    applyTransformAxisVisibility(controls, transformMode);
+  }, [transformMode]);
+
+  // Escape deselects the current furniture piece.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onSelectFurnitureRef.current?.(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Handle camera position updates based on mode and spherical coords
   const updateCameraPosition = () => {
@@ -312,7 +396,12 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       createWallSegment(scene, wallThick, roomL, wallHeight, roomW / 2, wallHeight / 2, 0, wallMat);
 
       // Place Furniture Pieces
+      furnitureObjectsRef.current = [];
+      furnitureDataRef.current = [];
+
       if (interiorData.furniture && Array.isArray(interiorData.furniture)) {
+        furnitureDataRef.current = interiorData.furniture.map((f) => ({ ...f }));
+
         interiorData.furniture.forEach((item) => {
           const itemPosX = item.x + item.width / 2 - roomW / 2;
           const itemPosZ = item.y + item.depth / 2 - roomL / 2;
@@ -320,20 +409,23 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
           const itemColor = new THREE.Color(item.color || interiorData.colorPalette?.[0]?.hex || '#4f46e5');
 
+          let rootObject: THREE.Object3D;
+
           if (item.category === 'seating') {
             // Detailed Sofa / Armchair
-            create3DSofa(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = create3DSofa(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
           } else if (item.category === 'table') {
             // Detailed Table
-            create3DTable(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = create3DTable(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
           } else if (item.category === 'storage') {
             // Credenza / Shelf
-            create3DStorage(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = create3DStorage(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
           } else if (item.category === 'lighting') {
             // Floor Lamp
-            create3DLamp(scene, itemPosX, itemPosZ, itemColor);
+            rootObject = create3DLamp(scene, itemPosX, itemPosZ, rotRad, itemColor);
           } else if (item.category === 'decor') {
-            // Flat Area Rug
+            // Flat Area Rug (wrapped in a group so it rotates like everything else)
+            const rugGroup = new THREE.Group();
             const rugGeo = new THREE.PlaneGeometry(item.width, item.depth);
             const rugMat = new THREE.MeshStandardMaterial({
               color: itemColor,
@@ -342,9 +434,13 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
             });
             const rugMesh = new THREE.Mesh(rugGeo, rugMat);
             rugMesh.rotation.x = -Math.PI / 2;
-            rugMesh.position.set(itemPosX, 0.02, itemPosZ);
+            rugMesh.position.y = 0.02;
             rugMesh.receiveShadow = true;
-            scene.add(rugMesh);
+            rugGroup.add(rugMesh);
+            rugGroup.position.set(itemPosX, 0, itemPosZ);
+            rugGroup.rotation.y = rotRad;
+            scene.add(rugGroup);
+            rootObject = rugGroup;
           } else {
             // Standard bounding furniture volume
             const defaultHeight = item.height || 0.75;
@@ -360,7 +456,12 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             scene.add(mesh);
+            rootObject = mesh;
           }
+
+          rootObject.userData.furnitureId = item.id;
+          rootObject.userData.category = item.category;
+          furnitureObjectsRef.current.push(rootObject);
         });
       }
     }
@@ -394,7 +495,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     rot: number,
     color: THREE.Color,
     wireframe: boolean
-  ) => {
+  ): THREE.Group => {
     const group = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.75, wireframe });
 
@@ -433,6 +534,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     group.position.set(x, 0, z);
     group.rotation.y = rot;
     scene.add(group);
+    return group;
   };
 
   const create3DTable = (
@@ -444,7 +546,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     rot: number,
     color: THREE.Color,
     wireframe: boolean
-  ) => {
+  ): THREE.Group => {
     const group = new THREE.Group();
     const tableTopH = 0.45;
     const topThickness = 0.05;
@@ -478,6 +580,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     group.position.set(x, 0, z);
     group.rotation.y = rot;
     scene.add(group);
+    return group;
   };
 
   const create3DStorage = (
@@ -489,7 +592,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     rot: number,
     color: THREE.Color,
     wireframe: boolean
-  ) => {
+  ): THREE.Group => {
     const group = new THREE.Group();
     const h = 0.65;
     const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, wireframe });
@@ -503,9 +606,16 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     group.position.set(x, 0, z);
     group.rotation.y = rot;
     scene.add(group);
+    return group;
   };
 
-  const create3DLamp = (scene: THREE.Scene, x: number, z: number, color: THREE.Color) => {
+  const create3DLamp = (
+    scene: THREE.Scene,
+    x: number,
+    z: number,
+    rot: number,
+    color: THREE.Color
+  ): THREE.Group => {
     const group = new THREE.Group();
     const poleH = 1.6;
 
@@ -535,17 +645,140 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     group.add(shade);
 
     group.position.set(x, 0, z);
+    group.rotation.y = rot;
     scene.add(group);
+    return group;
   };
 
-  // Mouse drag handlers for Orbit
+  // Enforce the same room-boundary clamp and non-overlap rule the server's
+  // sanitizeFurnitureCoordinates() applies, so dragging never produces a
+  // layout the backend wouldn't have allowed. Rotation is recorded freely
+  // (the server never validates it either). Rugs ('decor') are exempt from
+  // overlap checks on both sides since they are meant to sit under other
+  // furniture.
+  const applyTransformConstraints = (object: THREE.Object3D, furnitureId: string) => {
+    const list = furnitureDataRef.current;
+    const idx = list.findIndex((f) => f.id === furnitureId);
+    if (idx === -1) return;
+    const current = list[idx];
+
+    const rotationDeg = THREE.MathUtils.radToDeg(object.rotation.y);
+    current.rotation = ((rotationDeg % 360) + 360) % 360;
+
+    if (transformControlsRef.current?.getMode() !== 'translate') return;
+
+    const rawX = object.position.x + roomW / 2 - current.width / 2;
+    const rawY = object.position.z + roomL / 2 - current.depth / 2;
+
+    const maxX = Math.max(0, roomW - current.width);
+    const maxY = Math.max(0, roomL - current.depth);
+    const clampedX = Math.min(Math.max(rawX, 0), maxX);
+    const clampedY = Math.min(Math.max(rawY, 0), maxY);
+
+    const candidate = { ...current, x: clampedX, y: clampedY };
+    const overlapsOther =
+      current.category !== 'decor' &&
+      list.some((other, i) => i !== idx && other.category !== 'decor' && furnitureAabbOverlap(candidate, other));
+
+    if (overlapsOther) {
+      // Reject the move: snap the mesh back to its last valid position.
+      object.position.x = current.x + current.width / 2 - roomW / 2;
+      object.position.z = current.y + current.depth / 2 - roomL / 2;
+      return;
+    }
+
+    current.x = clampedX;
+    current.y = clampedY;
+    object.position.x = clampedX + current.width / 2 - roomW / 2;
+    object.position.z = clampedY + current.depth / 2 - roomL / 2;
+  };
+
+  // Attach/detach TransformControls to whichever furniture object matches
+  // the current selection, so the 2D preview and 3D view stay in sync.
+  const syncTransformSelection = () => {
+    const controls = transformControlsRef.current;
+    if (!controls) return;
+
+    if (!selectedFurnitureId) {
+      controls.detach();
+      return;
+    }
+
+    const target = furnitureObjectsRef.current.find(
+      (obj) => obj.userData.furnitureId === selectedFurnitureId
+    );
+    if (target) {
+      controls.attach(target);
+    } else {
+      controls.detach();
+    }
+  };
+
+  const applyTransformAxisVisibility = (controls: TransformControls, mode: 'translate' | 'rotate') => {
+    if (mode === 'translate') {
+      controls.showX = true;
+      controls.showZ = true;
+      controls.showY = false;
+    } else {
+      controls.showX = false;
+      controls.showZ = false;
+      controls.showY = true;
+    }
+  };
+
+  // Pure hit-test: which furniture id (if any) sits under a screen point.
+  // No side effects, so it's safe to call from mousedown to decide whether
+  // to suppress camera orbit, as well as from the click-to-deselect path.
+  const raycastFurnitureIdAt = (clientX: number, clientY: number): string | null => {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !camera || furnitureObjectsRef.current.length === 0) return null;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    raycasterRef.current.setFromCamera(ndc, camera);
+    const intersects = raycasterRef.current.intersectObjects(furnitureObjectsRef.current, true);
+    if (intersects.length === 0) return null;
+
+    let hit: THREE.Object3D | null = intersects[0].object;
+    while (hit && !hit.userData.furnitureId) hit = hit.parent;
+    return hit?.userData.furnitureId ?? null;
+  };
+
+  // Raycast from a screen point and select whichever furniture object (if
+  // any) it hits; clicking empty space deselects.
+  const handleFurnitureRaycastSelect = (clientX: number, clientY: number) => {
+    onSelectFurnitureRef.current?.(raycastFurnitureIdAt(clientX, clientY));
+  };
+
+  // Mouse drag handlers for Orbit (suppressed while TransformControls is
+  // actively dragging a furniture piece, so the camera doesn't spin at the
+  // same time as the gizmo drag). Also suppressed if the press itself lands
+  // directly on a furniture mesh: without this check, a plain click-and-drag
+  // on a furniture piece's body (rather than its gizmo handles) would orbit
+  // the camera and never select or move anything.
   const handleMouseDown = (e: React.MouseEvent) => {
+    pointerDownPosition.current = { x: e.clientX, y: e.clientY };
+
+    const hitFurnitureId = raycastFurnitureIdAt(e.clientX, e.clientY);
+    if (hitFurnitureId) {
+      if (hitFurnitureId !== selectedFurnitureId) {
+        onSelectFurnitureRef.current?.(hitFurnitureId);
+      }
+      isDragging.current = false;
+      return;
+    }
+
     isDragging.current = true;
     previousMousePosition.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging.current || cameraMode !== 'orbit') return;
+    if (!isDragging.current || cameraMode !== 'orbit' || isTransformDragging.current) return;
 
     const deltaX = e.clientX - previousMousePosition.current.x;
     const deltaY = e.clientY - previousMousePosition.current.y;
@@ -560,8 +793,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     updateCameraPosition();
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent) => {
     isDragging.current = false;
+
+    // A near-zero-movement mouseup (not mouseleave, and not the tail end of
+    // a gizmo drag) is treated as a click: raycast for furniture selection.
+    if (e.type === 'mouseup' && !isTransformDragging.current) {
+      const dx = e.clientX - pointerDownPosition.current.x;
+      const dy = e.clientY - pointerDownPosition.current.y;
+      if (Math.hypot(dx, dy) < 4) {
+        handleFurnitureRaycastSelect(e.clientX, e.clientY);
+      }
+    }
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -734,6 +977,49 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         </div>
       </div>
 
+      {/* Furniture Selection & Transform Panel (interior / renovation only) */}
+      {interiorData && selectedFurnitureId && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3 py-2 rounded-xl">
+          <span className="text-xs font-medium text-stone-200 max-w-[140px] truncate">
+            {interiorData.furniture?.find((f) => f.id === selectedFurnitureId)?.name || 'Selected Item'}
+          </span>
+
+          <div className="p-1 rounded-lg bg-stone-800/80 border border-stone-700/60 flex items-center gap-1">
+            <button
+              id="btn-3d-transform-move"
+              onClick={() => setTransformMode('translate')}
+              title="Move (drag within the floor plane)"
+              className={`px-2 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${
+                transformMode === 'translate' ? 'bg-stone-700 text-white' : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <Move className="w-3 h-3" />
+              <span>Move</span>
+            </button>
+            <button
+              id="btn-3d-transform-rotate"
+              onClick={() => setTransformMode('rotate')}
+              title="Rotate around vertical axis"
+              className={`px-2 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${
+                transformMode === 'rotate' ? 'bg-stone-700 text-white' : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <RotateCw className="w-3 h-3" />
+              <span>Rotate</span>
+            </button>
+          </div>
+
+          <button
+            id="btn-3d-transform-deselect"
+            onClick={() => onSelectFurnitureRef.current?.(null)}
+            title="Deselect (Esc)"
+            className="p-1.5 rounded-md text-stone-400 hover:text-white hover:bg-stone-800 transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Bottom Action / Export Bar */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3.5 py-2 rounded-xl">
         {/* Wall Height Adjuster */}
@@ -798,7 +1084,9 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       {/* Floating Instructions Toast */}
       <div className="absolute bottom-6 left-6 hidden lg:block pointer-events-none">
         <div className="bg-stone-900/80 border border-stone-800 backdrop-blur-md px-3 py-1.5 rounded-lg text-[11px] text-stone-400">
-          Left-click & drag to rotate · Scroll to zoom
+          {interiorData
+            ? 'Click furniture to select · Drag gizmo to move/rotate · Drag empty space to orbit · Scroll to zoom'
+            : 'Left-click & drag to rotate · Scroll to zoom'}
         </div>
       </div>
 
@@ -812,3 +1100,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     </div>
   );
 };
+
+// Axis-aligned overlap test for two furniture rectangles, ignoring rotation
+// (matches the approximation the server's sanitizeFurnitureCoordinates uses).
+function furnitureAabbOverlap(
+  a: { x: number; y: number; width: number; depth: number },
+  b: { x: number; y: number; width: number; depth: number }
+): boolean {
+  const EPS = 1e-6;
+  return (
+    a.x < b.x + b.width - EPS &&
+    a.x + a.width > b.x + EPS &&
+    a.y < b.y + b.depth - EPS &&
+    a.y + a.depth > b.y + EPS
+  );
+}

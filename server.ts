@@ -551,6 +551,7 @@ Return STRICT JSON ONLY conforming to this schema:
     }
 
     if (parsed && Array.isArray(parsed.furniture) && Array.isArray(parsed.colorPalette)) {
+      parsed.furniture = sanitizeFurnitureCoordinates(parsed.furniture, w, l);
       return res.json(parsed);
     }
 
@@ -590,6 +591,82 @@ function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
       area: Math.round(w * h * 10) / 10,
     };
   });
+}
+
+// Clamp every furniture item to the room boundary, then resolve any
+// overlapping pairs by nudging the later item apart along whichever axis
+// clears the overlap with the smaller shift. Rugs ('decor') are excluded
+// from overlap resolution since they are meant to sit underneath other
+// furniture, not avoid it.
+function sanitizeFurnitureCoordinates(furniture: any[], roomW: number, roomL: number) {
+  const clamped = furniture.map((f, i) => {
+    const width = Math.max(0.2, Math.min(Math.max(roomW - 0.1, 0.2), Number(f.width) || 0.8));
+    const depth = Math.max(0.2, Math.min(Math.max(roomL - 0.1, 0.2), Number(f.depth) || 0.8));
+    const x = Math.max(0, Math.min(roomW - width, Number(f.x) || 0));
+    const y = Math.max(0, Math.min(roomL - depth, Number(f.y) || 0));
+
+    return {
+      ...f,
+      id: f.id || `f_${i + 1}`,
+      x: Math.round(x * 100) / 100,
+      y: Math.round(y * 100) / 100,
+      width: Math.round(width * 100) / 100,
+      depth: Math.round(depth * 100) / 100,
+    };
+  });
+
+  const MAX_NUDGE_ITERATIONS = 8;
+  const NUDGE_STEP = 0.1;
+
+  for (let iteration = 0; iteration < MAX_NUDGE_ITERATIONS; iteration++) {
+    let movedAny = false;
+
+    for (let i = 0; i < clamped.length; i++) {
+      const item = clamped[i];
+      if (item.category === 'decor') continue;
+
+      for (let j = 0; j < i; j++) {
+        const other = clamped[j];
+        if (other.category === 'decor') continue;
+        if (!furnitureRectsOverlap(item, other)) continue;
+
+        // Push `item` away from `other` along whichever axis clears the
+        // overlap with the smaller nudge.
+        const overlapX = Math.min(item.x + item.width, other.x + other.width) - Math.max(item.x, other.x);
+        const overlapY = Math.min(item.y + item.depth, other.y + other.depth) - Math.max(item.y, other.y);
+
+        if (overlapX <= overlapY) {
+          const pushRight = item.x >= other.x;
+          item.x = pushRight ? item.x + overlapX + NUDGE_STEP : item.x - overlapX - NUDGE_STEP;
+        } else {
+          const pushDown = item.y >= other.y;
+          item.y = pushDown ? item.y + overlapY + NUDGE_STEP : item.y - overlapY - NUDGE_STEP;
+        }
+
+        // Re-clamp to the room boundary after nudging.
+        item.x = Math.round(Math.max(0, Math.min(roomW - item.width, item.x)) * 100) / 100;
+        item.y = Math.round(Math.max(0, Math.min(roomL - item.depth, item.y)) * 100) / 100;
+        movedAny = true;
+      }
+    }
+
+    if (!movedAny) break;
+  }
+
+  return clamped;
+}
+
+function furnitureRectsOverlap(
+  a: { x: number; y: number; width: number; depth: number },
+  b: { x: number; y: number; width: number; depth: number }
+): boolean {
+  const EPS = 1e-6;
+  return (
+    a.x < b.x + b.width - EPS &&
+    a.x + a.width > b.x + EPS &&
+    a.y < b.y + b.depth - EPS &&
+    a.y + a.depth > b.y + EPS
+  );
 }
 
 function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[]) {
