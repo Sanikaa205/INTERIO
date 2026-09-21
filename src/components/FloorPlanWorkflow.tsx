@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Compass,
   Plus,
@@ -6,6 +6,7 @@ import {
   Box,
   BookmarkPlus,
   RefreshCw,
+  RotateCcw,
   Grid,
   Info,
   ArrowLeft,
@@ -50,12 +51,29 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationStep, setGenerationStep] = useState<string>('');
   const [result, setResult] = useState<FloorPlanResult | null>(null);
-  const [selectedRoom, setSelectedRoom] = useState<FloorPlanRoom | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // View Options on SVG Blueprint
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [showDimensions, setShowDimensions] = useState<boolean>(true);
+
+  // Manual Room Repositioning: original layout kept for "Reset Layout",
+  // selection tracked by id (not a stale room snapshot), plus drag state.
+  const [originalRooms, setOriginalRooms] = useState<FloorPlanRoom[] | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [draggingRoomId, setDraggingRoomId] = useState<string | null>(null);
+  const selectedRoom = result?.rooms.find((r) => r.id === selectedRoomId) || null;
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const blueprintRef = useRef<HTMLDivElement | null>(null);
+  const dragInfoRef = useRef<{
+    roomId: string;
+    offsetX: number;
+    offsetY: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
 
   // Presets
   const handlePreset = (type: '3bhk' | '2bhk' | 'studio' | 'villa') => {
@@ -170,9 +188,8 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
       });
 
       setResult(generated);
-      if (generated.rooms && generated.rooms.length > 0) {
-        setSelectedRoom(generated.rooms[0]);
-      }
+      setOriginalRooms(generated.rooms ? generated.rooms.map((r) => ({ ...r })) : []);
+      setSelectedRoomId(generated.rooms && generated.rooms.length > 0 ? generated.rooms[0].id : null);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to generate floor plan');
@@ -180,6 +197,108 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
       clearInterval(stepInterval);
       setIsGenerating(false);
     }
+  };
+
+  // Attempt to move a room to a raw (unsnapped) position: snaps to the grid,
+  // clamps to the plot boundary, and rejects the move entirely if it would
+  // overlap another room (simplest reliable way to enforce non-overlap).
+  const tryMoveRoom = (roomId: string, rawX: number, rawY: number) => {
+    setResult((prev) => {
+      if (!prev) return prev;
+      const room = prev.rooms.find((r) => r.id === roomId);
+      if (!room) return prev;
+
+      const maxX = Math.max(0, roundTo(prev.plotWidth - room.width));
+      const maxY = Math.max(0, roundTo(prev.plotLength - room.height));
+
+      const x = roundTo(Math.min(Math.max(snapToGrid(rawX), 0), maxX));
+      const y = roundTo(Math.min(Math.max(snapToGrid(rawY), 0), maxY));
+
+      if (x === room.x && y === room.y) return prev;
+
+      const candidate: FloorPlanRoom = { ...room, x, y };
+      const overlaps = prev.rooms.some(
+        (other) => other.id !== room.id && rectsOverlap(candidate, other)
+      );
+      if (overlaps) return prev;
+
+      return {
+        ...prev,
+        rooms: prev.rooms.map((r) => (r.id === roomId ? candidate : r)),
+      };
+    });
+  };
+
+  const handleResetLayout = () => {
+    if (!originalRooms) return;
+    setResult((prev) => (prev ? { ...prev, rooms: originalRooms.map((r) => ({ ...r })) } : prev));
+  };
+
+  // Drag-to-reposition: pointer events + native SVG coordinate conversion so
+  // dragging stays accurate regardless of how the SVG is scaled on screen.
+  const handleRoomPointerDown = (e: React.PointerEvent<SVGGElement>, room: FloorPlanRoom) => {
+    e.stopPropagation();
+    setSelectedRoomId(room.id);
+    blueprintRef.current?.focus();
+
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const svgPoint = clientToSvgPoint(svg, e.clientX, e.clientY);
+    dragInfoRef.current = {
+      roomId: room.id,
+      offsetX: svgPoint.x - room.x,
+      offsetY: svgPoint.y - room.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false,
+    };
+    setDraggingRoomId(room.id);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleRoomPointerMove = (e: React.PointerEvent<SVGGElement>) => {
+    const drag = dragInfoRef.current;
+    const svg = svgRef.current;
+    if (!drag || !svg) return;
+
+    // Ignore tiny jitter so a plain click doesn't nudge the room.
+    if (!drag.moved) {
+      const dxPx = e.clientX - drag.startClientX;
+      const dyPx = e.clientY - drag.startClientY;
+      if (Math.hypot(dxPx, dyPx) < 3) return;
+      drag.moved = true;
+    }
+
+    const svgPoint = clientToSvgPoint(svg, e.clientX, e.clientY);
+    tryMoveRoom(drag.roomId, svgPoint.x - drag.offsetX, svgPoint.y - drag.offsetY);
+  };
+
+  const handleRoomPointerUp = (e: React.PointerEvent<SVGGElement>) => {
+    if (dragInfoRef.current && e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    dragInfoRef.current = null;
+    setDraggingRoomId(null);
+  };
+
+  // Arrow-key nudging of the selected room (Shift = larger step).
+  const handleBlueprintKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!selectedRoomId || !result) return;
+
+    const step = e.shiftKey ? ARROW_STEP_SHIFT : ARROW_STEP;
+    let dx = 0;
+    let dy = 0;
+    if (e.key === 'ArrowUp') dy = -step;
+    else if (e.key === 'ArrowDown') dy = step;
+    else if (e.key === 'ArrowLeft') dx = -step;
+    else if (e.key === 'ArrowRight') dx = step;
+    else return;
+
+    e.preventDefault();
+    const room = result.rooms.find((r) => r.id === selectedRoomId);
+    if (!room) return;
+    tryMoveRoom(selectedRoomId, room.x + dx, room.y + dy);
   };
 
   return (
@@ -457,6 +576,18 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                   <>
                     <button
                       type="button"
+                      id="btn-reset-floorplan-layout"
+                      onClick={handleResetLayout}
+                      disabled={!originalRooms}
+                      title="Restore the originally generated room positions"
+                      className="px-2.5 py-1 rounded-md bg-white border border-stone-200 hover:bg-stone-50 disabled:opacity-40 text-stone-700 text-xs font-medium transition-colors flex items-center gap-1"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset Layout</span>
+                    </button>
+
+                    <button
+                      type="button"
                       id="btn-save-floorplan"
                       onClick={() => onSaveProject(result)}
                       className="px-2.5 py-1 rounded-md bg-white border border-stone-200 hover:bg-stone-50 text-stone-800 text-xs font-medium transition-colors flex items-center gap-1"
@@ -480,12 +611,22 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
             </div>
 
             {/* SVG Canvas or Blueprint Placeholder */}
-            <div className="bg-stone-50/60 border border-stone-200/70 rounded-xl min-h-[400px] flex items-center justify-center p-4 relative overflow-hidden">
+            <div
+              ref={blueprintRef}
+              tabIndex={result ? 0 : -1}
+              onKeyDown={handleBlueprintKeyDown}
+              className="bg-stone-50/60 border border-stone-200/70 rounded-xl min-h-[400px] flex items-center justify-center p-4 relative overflow-hidden outline-hidden focus-visible:ring-2 focus-visible:ring-stone-400"
+            >
               {result ? (
                 <div className="w-full flex flex-col items-center">
+                  <p className="text-[11px] text-stone-400 mb-2 text-center">
+                    Drag a room to reposition it · Click a room, then use arrow keys to nudge (hold Shift for larger steps)
+                  </p>
                   <svg
+                    ref={svgRef}
                     viewBox={`-1 -1 ${result.plotWidth + 2} ${result.plotLength + 2}`}
                     className="w-full max-h-[480px] border border-stone-200 rounded-lg bg-white"
+                    style={{ touchAction: 'none' }}
                   >
                     <defs>
                       <pattern id="cad-grid" width="1" height="1" patternUnits="userSpaceOnUse">
@@ -534,13 +675,17 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
 
                     {/* Placed Rooms */}
                     {result.rooms.map((room) => {
-                      const isSelected = selectedRoom?.id === room.id;
+                      const isSelected = selectedRoomId === room.id;
+                      const isDragging = draggingRoomId === room.id;
                       const area = room.area || Math.round(room.width * room.height * 10) / 10;
                       return (
                         <g
                           key={room.id}
-                          onClick={() => setSelectedRoom(room)}
-                          className="cursor-pointer transition-all"
+                          onPointerDown={(e) => handleRoomPointerDown(e, room)}
+                          onPointerMove={handleRoomPointerMove}
+                          onPointerUp={handleRoomPointerUp}
+                          onPointerCancel={handleRoomPointerUp}
+                          className={`transition-colors ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
                         >
                           <rect
                             x={room.x}
@@ -551,8 +696,22 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                             fillOpacity={isSelected ? '0.35' : '0.18'}
                             stroke={isSelected ? '#1c1917' : '#78716c'}
                             strokeWidth={isSelected ? '0.16' : '0.1'}
-                            className="transition-all"
+                            className="transition-colors"
                           />
+
+                          {isSelected && (
+                            <rect
+                              x={room.x - 0.06}
+                              y={room.y - 0.06}
+                              width={room.width + 0.12}
+                              height={room.height + 0.12}
+                              fill="none"
+                              stroke="#2563eb"
+                              strokeWidth="0.05"
+                              strokeDasharray="0.14,0.08"
+                              pointerEvents="none"
+                            />
+                          )}
 
                           {renderDoorSwing(room)}
 
@@ -671,6 +830,46 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
     </div>
   );
 };
+
+// Manual repositioning tuning: snap increment and arrow-key step sizes (meters).
+const GRID_SNAP = 0.1;
+const ARROW_STEP = 0.1;
+const ARROW_STEP_SHIFT = 0.5;
+
+function snapToGrid(value: number, step: number = GRID_SNAP): number {
+  return Math.round(value / step) * step;
+}
+
+function roundTo(value: number, decimals: number = 2): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+// Two axis-aligned rectangles overlap only if they share more than a touching edge.
+function rectsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): boolean {
+  const EPS = 1e-6;
+  return (
+    a.x < b.x + b.width - EPS &&
+    a.x + a.width > b.x + EPS &&
+    a.y < b.y + b.height - EPS &&
+    a.y + a.height > b.y + EPS
+  );
+}
+
+// Convert a pointer's screen coordinates into the SVG's own user-space
+// coordinates (meters), accounting for however the SVG is currently scaled.
+function clientToSvgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: 0, y: 0 };
+  const transformed = point.matrixTransform(ctm.inverse());
+  return { x: transformed.x, y: transformed.y };
+}
 
 // Helper: Percentage of the plot actually covered by placed rooms,
 // computed directly from the rendered room rectangles (not an AI estimate).
