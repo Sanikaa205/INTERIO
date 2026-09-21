@@ -58,7 +58,6 @@ export interface FloorPlanResult {
   openSpaceArea?: number;
   architecturalStyle?: string;
   designNotes?: string;
-  circulationEfficiency?: number; // percentage (e.g. 85%)
 }
 
 // Workflow 2: Interior Design Types

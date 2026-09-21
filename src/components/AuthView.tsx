@@ -8,7 +8,6 @@ import {
   Eye,
   EyeOff,
   ArrowLeft,
-  Check,
 } from 'lucide-react';
 import { loginApi, registerApi } from '../services/api';
 import { User } from '../types';
@@ -55,7 +54,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [name, setName] = useState<string>('');
   const [email, setEmail] = useState<string>('architect@interio.design');
   const [password, setPassword] = useState<string>('interio2026');
-  const [role, setRole] = useState<string>('Architect');
   const [rememberMe, setRememberMe] = useState<boolean>(true);
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
@@ -281,29 +279,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       placeholder="Sarah Jenkins"
                       className="w-full pl-9 pr-3 py-2 bg-white border border-stone-200 rounded-lg text-xs text-stone-900 focus:border-stone-900 outline-hidden transition-colors"
                     />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
-                    Professional Role
-                  </label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {['Architect', 'Interior Designer', 'Real Estate', 'Homeowner'].map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => setRole(r)}
-                        className={`py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors text-left flex items-center justify-between ${
-                          role === r
-                            ? 'bg-stone-900 border-stone-900 text-white'
-                            : 'bg-white border-stone-200 text-stone-600 hover:border-stone-300'
-                        }`}
-                      >
-                        <span>{r}</span>
-                        {role === r && <Check className="w-3 h-3 text-white" />}
-                      </button>
-                    ))}
                   </div>
                 </div>
               </>

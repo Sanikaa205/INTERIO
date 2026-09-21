@@ -66,7 +66,6 @@ function initializeData() {
           totalBuiltArea: 138,
           openSpaceArea: 42,
           architecturalStyle: 'Contemporary Open-Plan',
-          circulationEfficiency: 88,
           designNotes: 'South-facing entrance with direct transition to high-ceiling living space. Kitchen placed adjacent to dining with pantry access. Private bedrooms clustered along the north and east perimeter for optimal natural illumination.',
           rooms: [
             { id: 'r1', name: 'Living Room', type: 'living-room', x: 0.5, y: 0.5, width: 5.5, height: 6.0, doorSide: 'bottom', windowSide: 'top', color: '#6366f1', adjacentTo: ['Dining Room', 'Foyer'] },
@@ -399,7 +398,6 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
   "openSpaceArea": <number in m²>,
   "architecturalStyle": "<e.g. Modern Open-Plan, Contemporary Split-Wing, Neo-Classical>",
   "designNotes": "<brief architectural critique and circulation flow description>",
-  "circulationEfficiency": <percentage number between 75 and 95>,
   "rooms": [
     {
       "id": "room_1",
@@ -737,7 +735,6 @@ function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRoo
     openSpaceArea: Math.max(0, Math.round((totalPlotArea - totalBuilt) * 10) / 10),
     architecturalStyle: 'Contemporary Biophilic Open-Plan',
     designNotes: 'Optimized solar path zoning with daytime public living spaces oriented toward expansive exterior openings and quiet night quarters secluded along the private acoustic envelope.',
-    circulationEfficiency: 86,
     rooms,
   };
 }

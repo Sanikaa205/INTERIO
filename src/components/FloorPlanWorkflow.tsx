@@ -607,10 +607,10 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                 </div>
                 <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-100">
                   <span className="text-[10px] text-stone-400 block">
-                    Circulation
+                    Space Utilization
                   </span>
                   <span className="text-xs font-semibold text-stone-900">
-                    {result.circulationEfficiency || 86}%
+                    {computeSpaceUtilization(result)}%
                   </span>
                 </div>
                 <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-100">
@@ -671,6 +671,20 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
     </div>
   );
 };
+
+// Helper: Percentage of the plot actually covered by placed rooms,
+// computed directly from the rendered room rectangles (not an AI estimate).
+function computeSpaceUtilization(result: FloorPlanResult): number {
+  const plotArea = result.plotWidth * result.plotLength;
+  if (plotArea <= 0) return 0;
+
+  const roomArea = result.rooms.reduce(
+    (sum, room) => sum + (room.area ?? room.width * room.height),
+    0
+  );
+
+  return Math.round(Math.min(100, (roomArea / plotArea) * 100));
+}
 
 // Helper: Render architectural door swing arc on SVG
 function renderDoorSwing(room: FloorPlanRoom) {
