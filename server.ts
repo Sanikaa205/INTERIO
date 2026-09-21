@@ -4,8 +4,13 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'interio-dev-secret-change-me';
+const JWT_EXPIRES_IN = '7d';
 
 const app = express();
 const PORT = 3000;
@@ -30,14 +35,14 @@ function initializeData() {
       {
         id: 'usr_demo_01',
         email: 'architect@interio.design',
-        password: 'interio2026',
+        password: bcrypt.hashSync('interio2026', 10),
         name: 'Alex Vance',
         createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
       },
       {
         id: 'usr_demo_02',
         email: 'demo@interio.ai',
-        password: 'password123',
+        password: bcrypt.hashSync('password123', 10),
         name: 'Alex Vance',
         createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
       },
@@ -211,7 +216,7 @@ app.get('/api/health', (req, res) => {
 
 // Token helpers
 function generateToken(userId: string): string {
-  return Buffer.from(JSON.stringify({ userId, timestamp: Date.now() })).toString('base64url');
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
 function extractUserId(authHeader?: string): string | null {
@@ -220,7 +225,7 @@ function extractUserId(authHeader?: string): string | null {
   if (!token) return null;
 
   try {
-    const decoded = JSON.parse(Buffer.from(token, 'base64url').toString('utf-8'));
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId?: string };
     if (decoded && decoded.userId) return decoded.userId;
   } catch {}
 
@@ -230,7 +235,7 @@ function extractUserId(authHeader?: string): string | null {
 // ----------------------------------------------------
 // AUTH API ROUTES
 // ----------------------------------------------------
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   const { email, password, name } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
@@ -245,7 +250,7 @@ app.post('/api/auth/register', (req, res) => {
   const newUser = {
     id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     email: email.trim().toLowerCase(),
-    password: password.trim(),
+    password: await bcrypt.hash(password.trim(), 10),
     name: name?.trim() || email.split('@')[0],
     createdAt: new Date().toISOString(),
   };
@@ -260,18 +265,17 @@ app.post('/api/auth/register', (req, res) => {
   });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
   const users = readUsers();
-  const user = users.find(
-    (u: any) => u.email.toLowerCase() === email.toLowerCase().trim() && u.password === password.trim()
-  );
+  const user = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase().trim());
 
-  if (!user) {
+  const passwordMatches = user ? await bcrypt.compare(password.trim(), user.password) : false;
+  if (!user || !passwordMatches) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
@@ -872,14 +876,12 @@ Return STRICT JSON ONLY conforming to this format:
 
     // Fallback if no API key or vision processing failed
     const fallbackInterior = generateAlgorithmicInterior(estimatedWidth, estimatedLength, selectedStyle, selectedBudget, type);
+    const structuralObservations = ai
+      ? 'AI-based structural analysis could not be completed for this photo. The renovation design below uses estimated room dimensions only; no structural diagnostics were performed.'
+      : 'AI-based structural analysis requires a Gemini API key. Add GEMINI_API_KEY to your environment to enable photo-based structural diagnostics. The renovation design below uses estimated room dimensions only.';
     return res.json({
-      structuralObservations: `Photogrammetric analysis identifies a standard rectangular volume with clear vertical plane convergence. Load-bearing outer walls appear intact with opportunities for expanded fenestration and upgraded ambient illumination.`,
-      detectedFeatures: [
-        'Single-pane perimeter window bay requiring thermal upgrade',
-        'Standard 2.7m ceiling clearance ideal for recessed track fixtures',
-        'Solid concrete/subfloor substrate suitable for engineered hardwood',
-        'Clean right-angle wall junctions allowing unhindered modular cabinetry',
-      ],
+      structuralObservations,
+      detectedFeatures: [],
       estimatedDimensions: {
         width: estimatedWidth,
         length: estimatedLength,
