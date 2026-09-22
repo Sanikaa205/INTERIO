@@ -135,22 +135,37 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     transformControlsRef.current = transformControls;
     applyTransformAxisVisibility(transformControls, transformMode);
     transformControls.setMode(transformMode);
-    scene.add(transformControls.getHelper());
+    const tcHelper = transformControls.getHelper();
+    scene.add(tcHelper);
 
     const handleDraggingChanged = (event: { value: unknown }) => {
       isTransformDragging.current = Boolean(event.value);
       if (!event.value) {
-        // Drag ended: push the committed furniture array up to the parent
-        // so Save / the 2D preview see the manual adjustment.
+        // Drag ended: only now do we enforce bounds/overlap, against the
+        // final released position. During the drag itself the piece moves
+        // freely (see handleObjectChange) so the gizmo never fights the
+        // user's mouse.
+        const object = transformControls.object;
+        const furnitureId = object?.userData.furnitureId;
+        if (object && furnitureId) {
+          applyTransformConstraints(object, furnitureId);
+        }
         onFurnitureChangeRef.current?.(furnitureDataRef.current.map((f) => ({ ...f })));
       }
     };
     const handleObjectChange = () => {
+      // Live updates while dragging: sync rotation only (no bounds/overlap
+      // rejection here, or the piece would appear to snap back mid-drag on
+      // every frame it overlaps something). Translation constraints are
+      // enforced once, on release, in handleDraggingChanged above.
       const object = transformControls.object;
       const furnitureId = object?.userData.furnitureId;
-      if (object && furnitureId) {
-        applyTransformConstraints(object, furnitureId);
-      }
+      if (!object || !furnitureId) return;
+      const list = furnitureDataRef.current;
+      const idx = list.findIndex((f) => f.id === furnitureId);
+      if (idx === -1) return;
+      const rotationDeg = THREE.MathUtils.radToDeg(object.rotation.y);
+      list[idx].rotation = ((rotationDeg % 360) + 360) % 360;
     };
     transformControls.addEventListener('dragging-changed', handleDraggingChanged);
     transformControls.addEventListener('objectChange', handleObjectChange);
