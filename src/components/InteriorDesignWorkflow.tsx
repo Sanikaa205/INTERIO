@@ -113,8 +113,14 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   // Submit to Gemini API
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsGenerating(true);
     setError(null);
+
+    if (!Number.isFinite(roomWidth) || roomWidth <= 0 || !Number.isFinite(roomLength) || roomLength <= 0) {
+      setError('Enter a room width and length greater than zero before generating.');
+      return;
+    }
+
+    setIsGenerating(true);
 
     const steps = [
       'Analyzing spatial clearance and circulation walkways...',
@@ -230,7 +236,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                     type="number"
                     min="3"
                     max="20"
-                    step="0.2"
+                    step="0.1"
                     value={roomWidth}
                     onChange={(e) => setRoomWidth(Math.max(3, Number(e.target.value)))}
                     required
@@ -246,7 +252,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                     type="number"
                     min="3"
                     max="25"
-                    step="0.2"
+                    step="0.1"
                     value={roomLength}
                     onChange={(e) => setRoomLength(Math.max(3, Number(e.target.value)))}
                     required

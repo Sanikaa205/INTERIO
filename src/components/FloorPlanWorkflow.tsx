@@ -159,8 +159,23 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
   // Submit to Gemini API
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsGenerating(true);
     setError(null);
+
+    if (!Number.isFinite(plotWidth) || plotWidth <= 0 || !Number.isFinite(plotLength) || plotLength <= 0) {
+      setError('Enter a plot width and length greater than zero before generating.');
+      return;
+    }
+    if (rooms.length === 0) {
+      setError('Add at least one room before generating a floor plan.');
+      return;
+    }
+    const invalidRoom = rooms.find((r) => !r.name.trim() || !Number.isFinite(r.minSize) || r.minSize <= 0);
+    if (invalidRoom) {
+      setError(`"${invalidRoom.name || 'Untitled room'}" needs a name and a minimum size greater than zero.`);
+      return;
+    }
+
+    setIsGenerating(true);
 
     const steps = [
       'Validating plot boundaries and setback easements...',

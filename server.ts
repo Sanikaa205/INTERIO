@@ -19,6 +19,19 @@ const PORT = 3000;
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+// Malformed JSON or an oversized body (e.g. a huge photo upload) would
+// otherwise reach Express's default HTML error page. Return clean JSON
+// instead so the frontend's error banners can show something readable.
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'That upload is too large. Please use a smaller photo (under 10MB).' });
+  }
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'The request could not be understood by the server.' });
+  }
+  next(err);
+});
+
 // Ensure data directory exists for persistent storage
 const DATA_DIR = path.join(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) {
@@ -159,6 +172,19 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+// Races a promise against a timeout so a stalled call (e.g. a hung network
+// request to Gemini) fails fast instead of leaving the request open
+// indefinitely, letting the caller's own fallback/retry logic take over.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 // Multi-model Gemini caller with automated fallback and backoff for high-demand spikes
 async function generateGeminiContentWithFallback(
   ai: GoogleGenAI,
@@ -171,19 +197,25 @@ async function generateGeminiContentWithFallback(
 ): Promise<string> {
   // Use high-capacity flash-lite first to avoid temporary demand spikes on flash-3.8
   const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+  // Vision (photo analysis) calls are inherently slower than text-only ones.
+  const perAttemptTimeoutMs = options.isVision ? 30000 : 20000;
 
   let lastError: any = null;
 
   for (const model of modelsToTry) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          responseMimeType: options.responseMimeType || 'application/json',
-          temperature: options.temperature ?? 0.2,
-        },
-      });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            responseMimeType: options.responseMimeType || 'application/json',
+            temperature: options.temperature ?? 0.2,
+          },
+        }),
+        perAttemptTimeoutMs,
+        `Gemini model ${model}`
+      );
 
       if (response && response.text) {
         return response.text;
@@ -418,6 +450,7 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
     const ai = getGeminiClient();
     if (!ai) {
       const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
+      fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
       return res.json(fallbackResult);
     }
 
@@ -430,6 +463,7 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing layout using parametric architectural algorithm.');
       const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
+      fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
       fallbackResult.designNotes = `${fallbackResult.designNotes} (Optimized with INTERIO parametric layout algorithm).`;
       return res.json(fallbackResult);
     }
@@ -448,14 +482,14 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
     }
 
     const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
+    fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
     return res.json(fallbackResult);
   } catch (err: any) {
     console.log('[INTERIO Engine] Floor plan routed through parametric generator.');
-    const fallbackResult = generateAlgorithmicFloorPlan(
-      Number(req.body.plotWidth) || 10,
-      Number(req.body.plotLength) || 12,
-      req.body.rooms || []
-    );
+    const fbWidth = Number(req.body.plotWidth) || 10;
+    const fbLength = Number(req.body.plotLength) || 12;
+    const fallbackResult = generateAlgorithmicFloorPlan(fbWidth, fbLength, req.body.rooms || []);
+    fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, fbWidth, fbLength);
     return res.json(fallbackResult);
   }
 });
@@ -573,14 +607,19 @@ Return STRICT JSON ONLY conforming to this schema:
 // ----------------------------------------------------
 // ALGORITHMIC FALLBACKS & SANITIZERS
 // ----------------------------------------------------
+// Clamp every room to the plot boundary, then resolve any overlapping
+// pairs by nudging the later room apart along whichever axis clears the
+// overlap with the smaller shift -- mirrors sanitizeFurnitureCoordinates
+// below, since both the Gemini-generated layout and the algorithmic
+// fallback can otherwise place rooms that overlap or spill past the plot
+// edge (most visibly when a small plot is asked to hold too many rooms).
 function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
-  return rooms.map((r, i) => {
+  const clamped = rooms.map((r, i) => {
     let w = Math.max(1.8, Math.min(plotW - 0.5, Number(r.width) || 3.5));
     let h = Math.max(1.8, Math.min(plotL - 0.5, Number(r.height) || 3.5));
     let x = Math.max(0, Math.min(plotW - w, Number(r.x) || 0));
     let y = Math.max(0, Math.min(plotL - h, Number(r.y) || 0));
 
-    // round to 1 decimal place
     return {
       ...r,
       id: r.id || `room_${i + 1}`,
@@ -591,6 +630,54 @@ function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
       area: Math.round(w * h * 10) / 10,
     };
   });
+
+  const MAX_NUDGE_ITERATIONS = 8;
+  const NUDGE_STEP = 0.1;
+
+  for (let iteration = 0; iteration < MAX_NUDGE_ITERATIONS; iteration++) {
+    let movedAny = false;
+
+    for (let i = 0; i < clamped.length; i++) {
+      const room = clamped[i];
+      for (let j = 0; j < i; j++) {
+        const other = clamped[j];
+        if (!roomRectsOverlap(room, other)) continue;
+
+        const overlapX = Math.min(room.x + room.width, other.x + other.width) - Math.max(room.x, other.x);
+        const overlapY = Math.min(room.y + room.height, other.y + other.height) - Math.max(room.y, other.y);
+
+        if (overlapX <= overlapY) {
+          const pushRight = room.x >= other.x;
+          room.x = pushRight ? room.x + overlapX + NUDGE_STEP : room.x - overlapX - NUDGE_STEP;
+        } else {
+          const pushDown = room.y >= other.y;
+          room.y = pushDown ? room.y + overlapY + NUDGE_STEP : room.y - overlapY - NUDGE_STEP;
+        }
+
+        // Re-clamp to the plot boundary after nudging.
+        room.x = Math.round(Math.max(0, Math.min(plotW - room.width, room.x)) * 10) / 10;
+        room.y = Math.round(Math.max(0, Math.min(plotL - room.height, room.y)) * 10) / 10;
+        movedAny = true;
+      }
+    }
+
+    if (!movedAny) break;
+  }
+
+  return clamped;
+}
+
+function roomRectsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): boolean {
+  const EPS = 1e-6;
+  return (
+    a.x < b.x + b.width - EPS &&
+    a.x + a.width > b.x + EPS &&
+    a.y < b.y + b.height - EPS &&
+    a.y + a.height > b.y + EPS
+  );
 }
 
 // Clamp every furniture item to the room boundary, then resolve any
@@ -682,6 +769,53 @@ function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRoo
     { name: 'Primary Bath', type: 'bathroom', minSize: 6 },
     { name: 'Powder Room', type: 'powder-room', minSize: 4 },
   ];
+
+  // The quadrant layout below assumes the plot is big enough to hold each
+  // requested room at a sane minimum size without overlap. It isn't — for a
+  // small plot with many/large rooms requested, the hardcoded per-room
+  // minimums (e.g. Math.max(2.5, ...)) blow straight through the available
+  // space, producing rooms that overlap each other and spill outside the
+  // plot boundary. Detect that up front and degrade the same way the
+  // Gemini prompt path already does: collapse to a single full-footprint
+  // room instead of a broken multi-room layout.
+  const plotArea = plotW * plotL;
+  const totalRequestedArea = roomTypes.reduce((sum: number, r: any) => sum + (Number(r.minSize) || 10), 0);
+  // The quadrant layout below has exactly 5 dedicated slots (4 quadrants
+  // plus one bath carved out of the bottom-right quadrant). Anything past
+  // that falls into a placeholder "remaining rooms" loop that places boxes
+  // at fixed coordinates with no awareness of what's already there --
+  // guaranteed overlap with the quadrant rooms, since they already occupy
+  // the entire plot by room 5. Route 6+ rooms to the same honest
+  // single-space degradation as the over-capacity case instead.
+  if (plotW < 2.6 || plotL < 2.6 || totalRequestedArea > plotArea * 0.85 || roomTypes.length > 5) {
+    const w = Math.round(Math.max(1.8, plotW - 0.5) * 10) / 10;
+    const h = Math.round(Math.max(1.8, plotL - 0.5) * 10) / 10;
+    const builtArea = Math.round(w * h * 10) / 10;
+    return {
+      plotWidth: plotW,
+      plotLength: plotL,
+      totalBuiltArea: builtArea,
+      openSpaceArea: Math.max(0, Math.round((plotArea - builtArea) * 10) / 10),
+      architecturalStyle: 'Micro-Living Efficiency',
+      designNotes: `The requested room sizes (totaling ~${Math.round(totalRequestedArea)}m²) exceed what a ${plotW}m x ${plotL}m plot can hold as separate rooms. This layout uses the full footprint as a single multi-functional space instead.`,
+      rooms: [
+        {
+          id: 'room_1',
+          name: 'Multi-Functional Micro-Unit',
+          type: roomTypes[0]?.type || 'living-room',
+          x: Math.round(((plotW - w) / 2) * 10) / 10,
+          y: Math.round(((plotL - h) / 2) * 10) / 10,
+          width: w,
+          height: h,
+          doorSide: 'bottom',
+          windowSide: 'top',
+          color: palette[0],
+          adjacentTo: [],
+          area: builtArea,
+        },
+      ],
+    };
+  }
 
   // Divide plot into sensible architectural quadrants
   const halfW = Math.round((plotW / 2) * 10) / 10;
@@ -948,11 +1082,16 @@ Return STRICT JSON ONLY conforming to this format:
       }
     }
 
-    // Fallback if no API key or vision processing failed
+    // Fallback if no API key, no photo, or vision processing failed
     const fallbackInterior = generateAlgorithmicInterior(estimatedWidth, estimatedLength, selectedStyle, selectedBudget, type);
-    const structuralObservations = ai
-      ? 'AI-based structural analysis could not be completed for this photo. The renovation design below uses estimated room dimensions only; no structural diagnostics were performed.'
-      : 'AI-based structural analysis requires a Gemini API key. Add GEMINI_API_KEY to your environment to enable photo-based structural diagnostics. The renovation design below uses estimated room dimensions only.';
+    let structuralObservations: string;
+    if (!ai) {
+      structuralObservations = 'AI-based structural analysis requires a Gemini API key. Add GEMINI_API_KEY to your environment to enable photo-based structural diagnostics. The renovation design below uses estimated room dimensions only.';
+    } else if (!imageBase64) {
+      structuralObservations = 'No photo was provided, so structural analysis was skipped. The renovation design below uses estimated room dimensions only.';
+    } else {
+      structuralObservations = 'AI-based structural analysis could not be completed for this photo. The renovation design below uses estimated room dimensions only; no structural diagnostics were performed.';
+    }
     return res.json({
       structuralObservations,
       detectedFeatures: [],

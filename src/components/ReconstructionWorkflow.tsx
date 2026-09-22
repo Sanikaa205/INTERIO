@@ -83,14 +83,40 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
   const [result, setResult] = useState<ReconstructionData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB
+
   // File Upload Handler
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Always clear the input value so re-selecting the same rejected file
+    // fires onChange again (browsers otherwise suppress a repeat event).
+    const inputEl = e.target;
     if (!file) return;
 
+    if (!file.type.startsWith('image/')) {
+      setError(`"${file.name}" isn't an image file. Please upload a JPG, PNG, or WEBP photo of the room.`);
+      inputEl.value = '';
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(`"${file.name}" is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Please upload a photo under 10MB.`);
+      inputEl.value = '';
+      return;
+    }
+
+    setError(null);
     const reader = new FileReader();
+    reader.onerror = () => {
+      setError('Could not read that file. Please try a different photo.');
+      inputEl.value = '';
+    };
     reader.onload = (uploadEvent) => {
       const base64 = uploadEvent.target?.result as string;
+      if (typeof base64 !== 'string' || !base64.startsWith('data:image/')) {
+        setError('That file could not be loaded as an image. Please try a different photo.');
+        inputEl.value = '';
+        return;
+      }
       setSelectedImage(base64);
       // Reset corners to reasonable perspective default
       setCornerPoints([
@@ -163,8 +189,18 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
   // Submit to Gemini API
   const handleGenerateRenovation = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsGenerating(true);
     setError(null);
+
+    if (!selectedImage) {
+      setError('Upload or select a room photo before generating a renovation plan.');
+      return;
+    }
+    if (cornerPoints.length < 4) {
+      setError(`Mark all 4 floor corners on the photo first (${cornerPoints.length}/4 placed).`);
+      return;
+    }
+
+    setIsGenerating(true);
 
     const steps = [
       'Performing photogrammetric perspective rectification...',
@@ -329,6 +365,11 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                   alt="Existing Room"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover opacity-90"
+                  onError={() => {
+                    setError('This photo could not be displayed and may be corrupted. Please choose another image.');
+                    setSelectedImage(SAMPLE_ROOMS[0].url);
+                    setCornerPoints(SAMPLE_ROOMS[0].defaultCorners);
+                  }}
                 />
 
                 {/* SVG Overlay for drawing connecting boundary lines */}

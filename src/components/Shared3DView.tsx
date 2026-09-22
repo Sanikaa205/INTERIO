@@ -5,6 +5,7 @@ import {
   FloorPlanResult,
   FurnitureItem,
   InteriorDesignResult,
+  Point2D,
   ReconstructionData,
   SavedProject,
 } from '../types';
@@ -97,6 +98,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // Calculate overall bounds
   const roomW = floorPlanData?.plotWidth || interiorData?.roomWidth || 8;
   const roomL = floorPlanData?.plotLength || interiorData?.roomLength || 10;
+
+  // Workflow 3 (Reconstruction): the 4 corners the user clicked on the room
+  // photo, still in normalized [0,1] image space. When present, the room
+  // shell is extruded to actually follow this quadrilateral instead of a
+  // plain rectangle. Older saved reconstructions without cornerPoints (or
+  // any other project type) fall back to the rectangular room below.
+  const reconstructionCorners: Point2D[] | null =
+    projectType === 'renovation' &&
+    Array.isArray((data as ReconstructionData)?.cornerPoints) &&
+    (data as ReconstructionData).cornerPoints.length >= 4
+      ? (data as ReconstructionData).cornerPoints
+      : null;
 
   // Initialize Three.js scene
   useEffect(() => {
@@ -381,8 +394,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
     // 3. SCENARIO B: INTERIOR DESIGN / RENOVATION WITH FURNITURE
     if (interiorData) {
+      // Reconstruction (Workflow 3) with clicked corners: scale the
+      // normalized [0,1] image-space quadrilateral into the same
+      // centered meter space furniture/walls already use.
+      const polygonCorners = reconstructionCorners
+        ? reconstructionCorners.slice(0, 4).map((p) => ({
+            x: (p.x - 0.5) * roomW,
+            z: (p.y - 0.5) * roomL,
+          }))
+        : null;
+
       // Main Room Hardwood/Stone Floor
-      const floorGeo = new THREE.PlaneGeometry(roomW, roomL);
+      const floorGeo = polygonCorners ? buildPolygonFloorGeometry(polygonCorners) : new THREE.PlaneGeometry(roomW, roomL);
       const floorMat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(interiorData.colorPalette?.[4]?.hex || '#d6c7b2'),
         roughness: 0.45,
@@ -403,12 +426,23 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       });
       const wallThick = 0.2;
 
-      // Back Wall (North)
-      createWallSegment(scene, roomW, wallThick, wallHeight, 0, wallHeight / 2, -roomL / 2, wallMat);
-      // Left Wall (West)
-      createWallSegment(scene, wallThick, roomL, wallHeight, -roomW / 2, wallHeight / 2, 0, wallMat);
-      // Right Wall (East) with window cutout simulation
-      createWallSegment(scene, wallThick, roomL, wallHeight, roomW / 2, wallHeight / 2, 0, wallMat);
+      if (polygonCorners) {
+        // Walls follow the actual clicked quadrilateral (corners in order
+        // 0=bottom-left, 1=bottom-right, 2=top-right, 3=top-left in the
+        // source photo). The 0->1 edge is the side nearest the camera in
+        // the photo, so it's left open here too, matching the rectangular
+        // room's convention of leaving the front wall out for visibility.
+        createWallSegmentBetween(scene, polygonCorners[1], polygonCorners[2], wallThick, wallHeight, wallMat);
+        createWallSegmentBetween(scene, polygonCorners[2], polygonCorners[3], wallThick, wallHeight, wallMat);
+        createWallSegmentBetween(scene, polygonCorners[3], polygonCorners[0], wallThick, wallHeight, wallMat);
+      } else {
+        // Back Wall (North)
+        createWallSegment(scene, roomW, wallThick, wallHeight, 0, wallHeight / 2, -roomL / 2, wallMat);
+        // Left Wall (West)
+        createWallSegment(scene, wallThick, roomL, wallHeight, -roomW / 2, wallHeight / 2, 0, wallMat);
+        // Right Wall (East) with window cutout simulation
+        createWallSegment(scene, wallThick, roomL, wallHeight, roomW / 2, wallHeight / 2, 0, wallMat);
+      }
 
       // Place Furniture Pieces
       furnitureObjectsRef.current = [];
@@ -418,8 +452,13 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         furnitureDataRef.current = interiorData.furniture.map((f) => ({ ...f }));
 
         interiorData.furniture.forEach((item) => {
-          const itemPosX = item.x + item.width / 2 - roomW / 2;
-          const itemPosZ = item.y + item.depth / 2 - roomL / 2;
+          let itemPosX = item.x + item.width / 2 - roomW / 2;
+          let itemPosZ = item.y + item.depth / 2 - roomL / 2;
+          if (polygonCorners) {
+            const clamped = clampPointToPolygon(itemPosX, itemPosZ, polygonCorners);
+            itemPosX = clamped.x;
+            itemPosZ = clamped.z;
+          }
           const rotRad = ((item.rotation || 0) * Math.PI) / 180;
 
           const itemColor = new THREE.Color(item.color || interiorData.colorPalette?.[0]?.hex || '#4f46e5');
@@ -499,6 +538,73 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     scene.add(mesh);
+  };
+
+  // Wall segment spanning two arbitrary points in the X/Z ground plane,
+  // used for the Workflow 3 reconstructed room shell (a non-rectangular
+  // quadrilateral), unlike createWallSegment above which is always
+  // axis-aligned.
+  const createWallSegmentBetween = (
+    scene: THREE.Scene,
+    a: { x: number; z: number },
+    b: { x: number; z: number },
+    thickness: number,
+    h: number,
+    mat: THREE.Material
+  ) => {
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 1e-4) return;
+    const geo = new THREE.BoxGeometry(length, h, thickness);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set((a.x + b.x) / 2, h / 2, (a.z + b.z) / 2);
+    mesh.rotation.y = -Math.atan2(dz, dx);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+  };
+
+  // Filled floor shape for the reconstructed quadrilateral. THREE.Shape is
+  // authored in local (x, y); after the floor mesh's rotation.x = -PI/2 that
+  // local y maps to world -z, so points are negated here to land it exactly
+  // under the (world x, world z) wall corners.
+  const buildPolygonFloorGeometry = (corners: { x: number; z: number }[]) => {
+    const shape = new THREE.Shape();
+    shape.moveTo(corners[0].x, -corners[0].z);
+    for (let i = 1; i < corners.length; i++) {
+      shape.lineTo(corners[i].x, -corners[i].z);
+    }
+    shape.closePath();
+    return new THREE.ShapeGeometry(shape);
+  };
+
+  // Even-odd ray-casting point-in-polygon test in the X/Z ground plane.
+  const isInsidePolygon = (x: number, z: number, poly: { x: number; z: number }[]) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, zi = poly[i].z;
+      const xj = poly[j].x, zj = poly[j].z;
+      const intersects = zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  };
+
+  // Pull a point that falls outside the reconstructed room's quadrilateral
+  // back toward the polygon's centroid until it lands inside, so furniture
+  // placed by the (rectangle-based) layout engine never renders through a
+  // slanted wall.
+  const clampPointToPolygon = (x: number, z: number, poly: { x: number; z: number }[]) => {
+    if (isInsidePolygon(x, z, poly)) return { x, z };
+    const cx = poly.reduce((sum, p) => sum + p.x, 0) / poly.length;
+    const cz = poly.reduce((sum, p) => sum + p.z, 0) / poly.length;
+    for (let t = 0.95; t > 0; t -= 0.05) {
+      const px = cx + (x - cx) * t;
+      const pz = cz + (z - cz) * t;
+      if (isInsidePolygon(px, pz, poly)) return { x: px, z: pz };
+    }
+    return { x: cx, z: cz };
   };
 
   const create3DSofa = (
