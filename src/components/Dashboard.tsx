@@ -12,7 +12,15 @@ import {
   ArrowRight,
   X,
 } from 'lucide-react';
-import { SavedProject, User, WorkflowType, DesignStyle } from '../types';
+import {
+  SavedProject,
+  User,
+  WorkflowType,
+  DesignStyle,
+  FloorPlanResult,
+  InteriorDesignResult,
+  ReconstructionData,
+} from '../types';
 
 interface DashboardProps {
   user: User | null;
@@ -113,14 +121,88 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  const getProjectThumbnail = (project: SavedProject) => {
+  // Render a miniature top-down blueprint SVG from the project's own saved
+  // geometry (room rectangles or furniture layout) instead of a stock photo.
+  const renderProjectThumbnail = (project: SavedProject) => {
     if (project.type === 'floorplan') {
-      return 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=600&q=80';
-    } else if (project.type === 'interior') {
-      return 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=600&q=80';
-    } else {
-      return 'https://images.unsplash.com/photo-1600566753376-12c8ab7fb75b?auto=format&fit=crop&w=600&q=80';
+      const plan = project.data as FloorPlanResult;
+      const w = plan.plotWidth || 10;
+      const l = plan.plotLength || 10;
+
+      return (
+        <svg
+          viewBox={`-0.4 -0.4 ${w + 0.8} ${l + 0.8}`}
+          preserveAspectRatio="xMidYMid slice"
+          className="w-full h-full"
+        >
+          <rect x={0} y={0} width={w} height={l} fill="#fafaf9" stroke="#d6d3d1" strokeWidth={0.12} />
+          {plan.rooms?.map((room) => (
+            <rect
+              key={room.id}
+              x={room.x}
+              y={room.y}
+              width={room.width}
+              height={room.height}
+              fill={room.color || '#a8a29e'}
+              fillOpacity={0.4}
+              stroke={room.color || '#78716c'}
+              strokeWidth={0.06}
+            />
+          ))}
+        </svg>
+      );
     }
+
+    // Interior or renovation projects: draw the room + furniture footprint.
+    const interiorData: InteriorDesignResult | undefined =
+      project.type === 'interior'
+        ? (project.data as InteriorDesignResult)
+        : (project.data as ReconstructionData).renovationDesign;
+
+    const dims = (project.data as ReconstructionData).estimatedDimensions;
+    const w = interiorData?.roomWidth || dims?.width || 6;
+    const l = interiorData?.roomLength || dims?.length || 7;
+    const wallColor = interiorData?.colorPalette?.find((c) => c.role === 'wall')?.hex || '#f5f5f4';
+    const floorColor = interiorData?.colorPalette?.find((c) => c.role === 'flooring')?.hex || '#e7e5e4';
+
+    return (
+      <svg
+        viewBox={`-0.3 -0.3 ${w + 0.6} ${l + 0.6}`}
+        preserveAspectRatio="xMidYMid slice"
+        className="w-full h-full"
+      >
+        <rect x={-0.3} y={-0.3} width={w + 0.6} height={l + 0.6} fill={wallColor} />
+        <rect x={0} y={0} width={w} height={l} fill={floorColor} />
+        {interiorData?.furniture?.map((item) => (
+          <rect
+            key={item.id}
+            x={item.x}
+            y={item.y}
+            width={item.width}
+            height={item.depth}
+            rx={0.05}
+            fill={item.color || '#78716c'}
+            transform={
+              item.rotation
+                ? `rotate(${item.rotation}, ${item.x + item.width / 2}, ${item.y + item.depth / 2})`
+                : undefined
+            }
+          />
+        ))}
+        {!interiorData && (
+          <rect
+            x={0.4}
+            y={0.4}
+            width={Math.max(0.1, w - 0.8)}
+            height={Math.max(0.1, l - 0.8)}
+            fill="none"
+            stroke="#a8a29e"
+            strokeDasharray="0.15,0.1"
+            strokeWidth={0.08}
+          />
+        )}
+      </svg>
+    );
   };
 
   return (
@@ -389,14 +471,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 key={project.id}
                 className="bg-white rounded-2xl border border-stone-200/80 hover:border-stone-400 transition-all duration-200 flex flex-col justify-between overflow-hidden group"
               >
-                {/* Visual Thumbnail */}
+                {/* Visual Thumbnail: real SVG blueprint from the project's own data */}
                 <div className="relative aspect-[16/9] overflow-hidden bg-stone-100">
-                  <img
-                    src={getProjectThumbnail(project)}
-                    alt={project.title}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-102"
-                    referrerPolicy="no-referrer"
-                  />
+                  <div className="w-full h-full transition-transform duration-300 group-hover:scale-102">
+                    {renderProjectThumbnail(project)}
+                  </div>
                   <div className="absolute top-2.5 left-2.5">
                     <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-white/90 backdrop-blur-xs text-stone-800 border border-stone-200/60 shadow-2xs">
                       {getBadgeLabel(project.type)}

@@ -2,14 +2,14 @@
   {
     "id": "usr_demo_01",
     "email": "architect@interio.design",
-    "password": "interio2026",
+    "password": "$2b$10$iFwOlzhbmykGIyGlD.rAP.bd3REK5kCX0ppN0spNGJZhtDJPACk0G",
     "name": "Alex Vance",
     "createdAt": "2026-09-02T07:56:47.894Z"
   },
   {
     "id": "usr_demo_02",
     "email": "demo@interio.ai",
-    "password": "password123",
+    "password": "$2b$10$x0jcto6EyahzBcqAwaCmS.tIZWWC6FHeKXuGc4FqS4hMQFFTbv66W",
     "name": "Alex Vance",
     "createdAt": "2026-09-02T07:56:47.894Z"
   }

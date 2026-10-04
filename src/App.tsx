@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   DesignStyle,
   FloorPlanResult,
+  FurnitureItem,
   InteriorDesignResult,
   ReconstructionData,
   SavedProject,
@@ -45,6 +46,11 @@ export default function App() {
   >(null);
   const [active3DType, setActive3DType] = useState<'floorplan' | 'interior' | 'renovation'>('floorplan');
   const [active3DTitle, setActive3DTitle] = useState<string>('Parametric Design Studio');
+
+  // Furniture selection shared between the 2D interior preview and the 3D
+  // studio, so picking (or moving) a piece in one view is reflected in the
+  // other when the user switches tabs.
+  const [selectedFurnitureId, setSelectedFurnitureId] = useState<string | null>(null);
 
   // Save Project Modal State
   const [saveModalOpen, setSaveModalOpen] = useState<boolean>(false);
@@ -171,6 +177,24 @@ export default function App() {
     setSaveTitle(`${result.style} ${result.roomWidth}x${result.roomLength}m Concept`);
     setSaveDescription(result.designPhilosophy || 'Personalized interior curation.');
     setSaveModalOpen(true);
+  };
+
+  // Furniture moved/rotated via TransformControls in the 3D Studio: fold the
+  // updated positions back into active3DData so Save (and returning to the
+  // 2D editor) reflect the manual adjustment.
+  const handleFurnitureChange = (furniture: FurnitureItem[]) => {
+    setActive3DData((prev) => {
+      if (!prev) return prev;
+      if (active3DType === 'interior') {
+        return { ...(prev as InteriorDesignResult), furniture };
+      }
+      if (active3DType === 'renovation') {
+        const recon = prev as ReconstructionData;
+        if (!recon.renovationDesign) return prev;
+        return { ...recon, renovationDesign: { ...recon.renovationDesign, furniture } };
+      }
+      return prev;
+    });
   };
 
   const handleViewReconstruction3D = (result: ReconstructionData) => {
@@ -407,6 +431,9 @@ export default function App() {
               onSaveProject={triggerSaveInterior}
               onBackToHome={() => setActiveTab('dashboard')}
               initialStyle={selectedInteriorStyle}
+              initialResult={active3DType === 'interior' ? (active3DData as InteriorDesignResult | null) : null}
+              selectedFurnitureId={selectedFurnitureId}
+              onSelectFurniture={setSelectedFurnitureId}
             />
           )}
 
@@ -437,6 +464,9 @@ export default function App() {
                   else triggerSaveReconstruction(active3DData as ReconstructionData);
                 }
               }}
+              selectedFurnitureId={selectedFurnitureId}
+              onSelectFurniture={setSelectedFurnitureId}
+              onFurnitureChange={handleFurnitureChange}
             />
           )}
         </main>
