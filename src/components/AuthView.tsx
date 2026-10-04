@@ -58,6 +58,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeSceneIdx, setActiveSceneIdx] = useState<number>(0);
 
   const activeScene = BACKGROUND_SCENES[activeSceneIdx];
@@ -65,6 +66,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSuccessMessage(null);
     setLoading(true);
 
     try {
@@ -79,7 +81,10 @@ export const AuthView: React.FC<AuthViewProps> = ({
           throw new Error('Password must be at least 6 characters');
         }
         const user = await registerApi(email, password, name);
-        onAuthSuccess(user);
+        setEmail(user.email);
+        setPassword('');
+        setIsLogin(true);
+        setSuccessMessage('Account created. Please sign in with your registered credentials.');
       }
     } catch (err: any) {
       console.error(err);
@@ -208,6 +213,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               onClick={() => {
                 setIsLogin(true);
                 setError(null);
+                setSuccessMessage(null);
               }}
               className={`py-1.5 rounded-md transition-all ${
                 isLogin
@@ -223,6 +229,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               onClick={() => {
                 setIsLogin(false);
                 setError(null);
+                setSuccessMessage(null);
               }}
               className={`py-1.5 rounded-md transition-all ${
                 !isLogin
@@ -346,6 +353,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
               </div>
             )}
 
+            {successMessage && (
+              <div className="p-2.5 bg-green-50 border border-green-200 text-green-700 text-xs rounded-lg">
+                <span className="leading-relaxed">{successMessage}</span>
+              </div>
+            )}
+
             {error && (
               <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg flex items-start gap-2">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-red-500" />
@@ -379,6 +392,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   onClick={() => {
                     setIsLogin(false);
                     setError(null);
+                    setSuccessMessage(null);
                   }}
                   className="font-medium text-stone-900 hover:underline"
                 >
@@ -393,6 +407,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   onClick={() => {
                     setIsLogin(true);
                     setError(null);
+                    setSuccessMessage(null);
                   }}
                   className="font-medium text-stone-900 hover:underline"
                 >

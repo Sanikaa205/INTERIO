@@ -56,20 +56,20 @@ export async function loginUser(email: string, password: string): Promise<{ user
   return data;
 }
 
-export async function registerUser(email: string, password: string, name?: string): Promise<{ user: User; token: string }> {
+export async function registerUser(email: string, password: string, name?: string, role?: string): Promise<User> {
   const res = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify({ email, password, name, role }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Registration failed' }));
     throw new Error(err.error || 'Failed to register');
   }
   const data = await res.json();
-  localStorage.setItem('interio_token', data.token);
-  localStorage.setItem('interio_user', JSON.stringify(data.user));
-  return data;
+  localStorage.removeItem('interio_token');
+  localStorage.removeItem('interio_user');
+  return data.user;
 }
 
 export function getStoredUser(): User | null {
@@ -115,9 +115,8 @@ export const loginApi = async (email: string, password: string): Promise<User> =
   return result.user;
 };
 
-export const registerApi = async (email: string, password: string, name?: string): Promise<User> => {
-  const result = await registerUser(email, password, name);
-  return result.user;
+export const registerApi = async (email: string, password: string, name?: string, role?: string): Promise<User> => {
+  return registerUser(email, password, name, role);
 };
 
 export function logoutUser(): void {

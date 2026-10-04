@@ -267,7 +267,7 @@ function extractUserId(authHeader?: string): string | null {
 // AUTH API ROUTES
 // ----------------------------------------------------
 app.post('/api/auth/register', async (req, res) => {
-  const { email, password, name } = req.body;
+  const { email, password, name, role } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
@@ -283,16 +283,15 @@ app.post('/api/auth/register', async (req, res) => {
     email: email.trim().toLowerCase(),
     password: await bcrypt.hash(password.trim(), 10),
     name: name?.trim() || email.split('@')[0],
+    role: role?.trim() || 'Architect',
     createdAt: new Date().toISOString(),
   };
 
   users.push(newUser);
   writeUsers(users);
 
-  const token = generateToken(newUser.id);
   return res.json({
-    user: { id: newUser.id, email: newUser.email, name: newUser.name, createdAt: newUser.createdAt },
-    token,
+    user: { id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role, createdAt: newUser.createdAt },
   });
 });
 
