@@ -6,6 +6,8 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { optimizeFurnitureLayout, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
+import { matchFurnitureAsset } from './src/services/furnitureAssets';
 
 dotenv.config();
 
@@ -13,7 +15,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'interio-dev-secret-change-me';
 const JWT_EXPIRES_IN = '7d';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Body parser
 app.use(express.json({ limit: '25mb' }));
@@ -498,70 +500,59 @@ Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown w
 // ----------------------------------------------------
 app.post('/api/gemini/interior', async (req, res) => {
   try {
-    const { roomWidth, roomLength, style, budget, roomType } = req.body;
-
-    const w = Number(roomWidth) || 5;
-    const l = Number(roomLength) || 6;
-    const selectedStyle = style || 'modern';
-    const selectedBudget = budget || '$10,000';
-    const type = roomType || 'Living Room';
-
-    const prompt = `You are a world-class high-end interior architect and furniture curator.
-Design a complete, mathematically precise interior layout for a ${type} with:
-- Dimensions: Width = ${w} meters (X axis, from 0 to ${w}), Length = ${l} meters (Y axis, from 0 to ${l})
-- Aesthetic Style: ${selectedStyle}
-- Target Budget: ${selectedBudget}
-
-CRITICAL RULES:
-1. Furniture Placement:
-   - Provide an array of realistic furniture pieces with x, y, width, depth (in meters).
-   - Furniture must sit within the room boundaries (0 <= x <= ${w} - width, 0 <= y <= ${l} - depth).
-   - Leave comfortable walkways (at least 0.7m clearance between key pieces).
-   - Category must be one of: 'seating' | 'table' | 'storage' | 'bed' | 'lighting' | 'decor' | 'fixture' | 'electronics'.
-   - Rotation should be 0, 90, 180, or 270 degrees.
-2. Color Palette:
-   - Provide exactly 5 cohesive hex color swatches suited for ${selectedStyle}.
-   - Each swatch must have: hex (e.g. #2C3539), name (e.g. "Nordic Slate"), role ('primary'|'secondary'|'accent'|'wall'|'trim'|'flooring'), and description.
-3. Lighting Suggestions:
-   - Detailed, actionable lighting strategy including fixture types, kelvin color temperature (e.g. 2700K warm), task lights, and placement.
-4. Material Finishes & Philosophy:
-   - Provide recommended wood species, metal finishes, textile weaves, and overarching design intent.
-
-Return STRICT JSON ONLY conforming to this schema:
-{
-  "roomWidth": ${w},
-  "roomLength": ${l},
-  "roomType": "${type}",
-  "style": "${selectedStyle}",
-  "budget": "${selectedBudget}",
-  "designPhilosophy": "<concise summary of spatial concept and atmosphere>",
-  "lightingSuggestions": "<in-depth paragraph on layering ambient, task, and accent lighting>",
-  "materialFinishes": "<summary of recommended flooring, fabrics, and metals>",
-  "colorPalette": [
-    { "hex": "#...", "name": "...", "role": "primary", "description": "..." }
-  ],
-  "furniture": [
-    {
-      "id": "f_1",
-      "name": "...",
-      "category": "seating",
-      "x": <number>,
-      "y": <number>,
-      "width": <number>,
-      "depth": <number>,
-      "height": <number>,
-      "rotation": 0,
-      "material": "...",
-      "color": "#...",
-      "notes": "...",
-      "estimatedPrice": "$..."
+    const { roomWidth, roomLength, style, budget, roomType, preferredColors = [], additionalRequirements = '', openings = [] } = req.body;
+    const w = Number(roomWidth);
+    const l = Number(roomLength);
+    if (!Number.isFinite(w) || !Number.isFinite(l) || w < 1 || l < 1 || w > 50 || l > 50) {
+      return res.status(400).json({ error: 'Room width and length must be between 1 and 50 meters.' });
     }
-  ]
-}`;
+    const selectedStyle = ['modern', 'minimal', 'traditional', 'industrial', 'scandinavian', 'japandi'].includes(style) ? style : 'modern';
+    const selectedBudget = String(budget || '$10,000').slice(0, 100);
+    const type = String(roomType || 'Living Room').slice(0, 80);
+    const cleanedColors = (Array.isArray(preferredColors) ? preferredColors : []).filter((color: unknown) => typeof color === 'string').slice(0, 8).map((color: string) => color.slice(0, 40));
+    const cleanedRequirements = String(additionalRequirements).slice(0, 1000);
+    const validOpenings: LayoutOpening[] = Array.isArray(openings) ? openings.slice(0, 30).filter((o: any) => ['north', 'south', 'east', 'west'].includes(o?.wall) && Number.isFinite(Number(o.start)) && Number.isFinite(Number(o.end)) && Number(o.end) > Number(o.start) && ['door', 'window'].includes(o.type)).map((o: any) => ({ ...o, start: Number(o.start), end: Number(o.end) })) : [];
+
+    const prompt = `You are an interior design curator. Suggest a practical design for a ${type} measuring ${w}m by ${l}m. Style: ${selectedStyle}. Budget: ${selectedBudget}. Preferred colors: ${cleanedColors.join(', ')}. Additional requirements: ${cleanedRequirements}.
+Return STRICT JSON only. Do not choose final coordinates or rotation; a deterministic optimizer handles placement. Give 3-8 furniture suggestions with realistic width/depth/height in meters and a preferredWall (north/south/east/west/center), plus category, material, color, notes and estimatedPrice. Include five palette colors, designPhilosophy, designSuggestions array, lightingSuggestions and materialFinishes. Use this JSON shape: {"designPhilosophy":"...","designSuggestions":["..."],"lightingSuggestions":"...","materialFinishes":"...","colorPalette":[{"hex":"#...","name":"...","role":"primary","description":"..."}],"furniture":[{"id":"f_1","name":"...","category":"seating","width":1.8,"depth":0.8,"height":0.8,"preferredWall":"north","material":"...","color":"#...","notes":"...","estimatedPrice":"..."}]}`;
+
+    const finish = (design: any) => {
+      const rawSuggestions = Array.isArray(design.furniture) ? design.furniture.slice(0, 20) : [];
+      const categories = ['seating', 'table', 'storage', 'bed', 'lighting', 'decor', 'fixture', 'electronics'];
+      const walls = ['north', 'south', 'east', 'west', 'center'];
+      const suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
+        id: typeof item.id === 'string' ? item.id.slice(0, 60) : `f_${index + 1}`,
+        name: typeof item.name === 'string' ? item.name.slice(0, 100) : `Furniture ${index + 1}`,
+        category: categories.includes(item.category) ? item.category : 'decor',
+        width: Math.min(10, Math.max(0.25, Number(item.width) || 0.8)),
+        depth: Math.min(10, Math.max(0.25, Number(item.depth) || 0.8)),
+        height: Math.min(4, Math.max(0.1, Number(item.height) || 0.75)),
+        preferredWall: walls.includes(item.preferredWall) ? item.preferredWall : 'center',
+        material: typeof item.material === 'string' ? item.material.slice(0, 100) : undefined,
+        color: typeof item.color === 'string' && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : undefined,
+        notes: typeof item.notes === 'string' ? item.notes.slice(0, 300) : undefined,
+        estimatedPrice: typeof item.estimatedPrice === 'string' ? item.estimatedPrice.slice(0, 80) : undefined,
+      }));
+      const colorPalette = (Array.isArray(design.colorPalette) ? design.colorPalette : []).filter((swatch: any) => swatch && typeof swatch.hex === 'string' && /^#[0-9a-f]{6}$/i.test(swatch.hex) && typeof swatch.name === 'string').slice(0, 8);
+      const furniture = optimizeFurnitureLayout(suggestions, { width: w, depth: l, openings: validOpenings }).map((item) => {
+        const asset = matchFurnitureAsset(item);
+        return { ...item, assetId: asset?.id, assetUrl: asset?.url };
+      });
+      return {
+        ...design, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
+        furniture, colorPalette: colorPalette.length ? colorPalette : generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type).colorPalette,
+        layoutWarnings: furniture.length < rawSuggestions.length ? ['Some suggested pieces were omitted because they could not fit while preserving room bounds, opening clearance, and walking space.'] : [],
+        designSuggestions: Array.isArray(design.designSuggestions) ? design.designSuggestions.filter((suggestion: unknown) => typeof suggestion === 'string').slice(0, 10) : [],
+        lightingSuggestions: typeof design.lightingSuggestions === 'string' ? design.lightingSuggestions.slice(0, 2000) : '',
+        designPhilosophy: typeof design.designPhilosophy === 'string' ? design.designPhilosophy.slice(0, 1000) : '',
+        materialFinishes: typeof design.materialFinishes === 'string' ? design.materialFinishes.slice(0, 1000) : '',
+        additionalRequirements: cleanedRequirements, preferredColors: cleanedColors,
+      };
+    };
 
     const ai = getGeminiClient();
     if (!ai) {
-      return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
     }
 
     let text = '';
@@ -572,7 +563,7 @@ Return STRICT JSON ONLY conforming to this schema:
       });
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing interior palette using architectural curation matrix.');
-      return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
     }
 
     let parsed: any;
@@ -584,22 +575,13 @@ Return STRICT JSON ONLY conforming to this schema:
     }
 
     if (parsed && Array.isArray(parsed.furniture) && Array.isArray(parsed.colorPalette)) {
-      parsed.furniture = sanitizeFurnitureCoordinates(parsed.furniture, w, l);
-      return res.json(parsed);
+      return res.json(finish(parsed));
     }
 
-    return res.json(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type));
+    return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
   } catch (err: any) {
     console.log('[INTERIO Engine] Interior curation routed through architectural matrix.');
-    return res.json(
-      generateAlgorithmicInterior(
-        Number(req.body.roomWidth) || 5,
-        Number(req.body.roomLength) || 6,
-        req.body.style || 'modern',
-        req.body.budget || '$10,000',
-        req.body.roomType || 'Living Room'
-      )
-    );
+    return res.status(500).json({ error: err?.message || 'Could not generate a valid furniture layout for these room constraints.' });
   }
 });
 
@@ -1287,6 +1269,7 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
+      configLoader: 'runner',
       server: { middlewareMode: true },
       appType: 'spa',
     });

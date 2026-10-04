@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { createFloorMaterial, createFurnitureModel, addStyledDecor } from '../three/interiorVisuals';
 import {
   FloorPlanResult,
   FurnitureItem,
@@ -60,6 +63,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   const [cameraMode, setCameraMode] = useState<'orbit' | 'top' | 'iso'>('orbit');
   const [lightingMode, setLightingMode] = useState<'day' | 'night'>('day');
   const [showWireframe, setShowWireframe] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [wallHeight, setWallHeight] = useState(2.8); // meters
   const [exportedToast, setExportedToast] = useState(false);
@@ -139,6 +143,15 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.98;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const roomEnvironment = new RoomEnvironment();
+    const environmentTarget = pmrem.fromScene(roomEnvironment, 0.04);
+    scene.environment = environmentTarget.texture;
+    pmrem.dispose();
+    roomEnvironment.dispose();
 
     mountRef.current.innerHTML = '';
     mountRef.current.appendChild(renderer.domElement);
@@ -221,13 +234,14 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       transformControls.removeEventListener('dragging-changed', handleDraggingChanged);
       transformControls.removeEventListener('objectChange', handleObjectChange);
       transformControls.dispose();
+      environmentTarget.dispose();
       transformControlsRef.current = null;
       if (rendererRef.current?.domElement && mountRef.current) {
         mountRef.current.innerHTML = '';
       }
       renderer.dispose();
     };
-  }, [data, projectType, wallHeight, lightingMode, showWireframe]);
+  }, [data, projectType, wallHeight, lightingMode, showWireframe, showGrid]);
 
   // Re-sync the gizmo when selection changes without a full scene rebuild
   // (e.g. the user picked a different item in the 2D preview before
@@ -281,15 +295,17 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // Setup Lights
   const setupLighting = (scene: THREE.Scene) => {
     // Ambient Light
-    const ambientColor = lightingMode === 'day' ? 0xffffff : 0x1e293b;
-    const ambientIntensity = lightingMode === 'day' ? 0.75 : 0.4;
-    const ambient = new THREE.AmbientLight(ambientColor, ambientIntensity);
+    const ambient = new THREE.HemisphereLight(
+      lightingMode === 'day' ? 0xfff7e9 : 0xb5c7e1,
+      lightingMode === 'day' ? 0x7a6957 : 0x252b3a,
+      lightingMode === 'day' ? 0.72 : 0.48
+    );
     scene.add(ambient);
 
     // Directional Sunlight
     const sunLight = new THREE.DirectionalLight(
       lightingMode === 'day' ? 0xfffaed : 0x93c5fd,
-      lightingMode === 'day' ? 1.2 : 0.5
+      lightingMode === 'day' ? 1.05 : 0.55
     );
     sunLight.position.set(15, 25, 12);
     sunLight.castShadow = true;
@@ -303,10 +319,12 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     sunLight.shadow.camera.top = d;
     sunLight.shadow.camera.bottom = -d;
     sunLight.shadow.bias = -0.0005;
+    sunLight.shadow.normalBias = 0.025;
+    sunLight.shadow.radius = 5;
     scene.add(sunLight);
 
     // Soft Fill Light
-    const fillLight = new THREE.DirectionalLight(0xe0e7ff, 0.4);
+    const fillLight = new THREE.DirectionalLight(0xe0e7ff, 0.24);
     fillLight.position.set(-15, 12, -10);
     scene.add(fillLight);
 
@@ -329,27 +347,22 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     updateCameraPosition();
 
     // 1. Foundation Ground / Grid Floor
-    const groundGeo = new THREE.PlaneGeometry(roomW * 3, roomL * 3);
+    const groundGeo = new THREE.PlaneGeometry(roomW + 5, roomL + 5);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: lightingMode === 'day' ? 0xedebe8 : 0x090d16,
+      color: lightingMode === 'day' ? 0xe9e5de : 0x191b20,
       roughness: 0.9,
-      metalness: 0.1,
+      metalness: 0,
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.02;
     ground.receiveShadow = true;
     scene.add(ground);
-
-    // Architectural Grid Lines
-    const grid = new THREE.GridHelper(
-      Math.max(roomW, roomL) * 2.5,
-      Math.max(roomW, roomL) * 2,
-      lightingMode === 'day' ? 0xcbd5e1 : 0x334155,
-      lightingMode === 'day' ? 0xe2e8f0 : 0x1e293b
-    );
-    grid.position.y = 0.001;
-    scene.add(grid);
+    if (showGrid) {
+      const grid = new THREE.GridHelper(Math.max(roomW, roomL) + 4, Math.max(8, Math.ceil(Math.max(roomW, roomL) * 2)), 0xb8aa98, 0xd8d0c5);
+      grid.position.y = 0.002;
+      scene.add(grid);
+    }
 
     // 2. SCENARIO A: MULTI-ROOM FLOOR PLAN
     if (floorPlanData && floorPlanData.rooms) {
@@ -406,12 +419,9 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
       // Main Room Hardwood/Stone Floor
       const floorGeo = polygonCorners ? buildPolygonFloorGeometry(polygonCorners) : new THREE.PlaneGeometry(roomW, roomL);
-      const floorMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(interiorData.colorPalette?.[4]?.hex || '#d6c7b2'),
-        roughness: 0.45,
-        metalness: 0.05,
-        wireframe: showWireframe,
-      });
+      const floorColor = interiorData.colorPalette?.find((swatch) => swatch.role === 'flooring')?.hex || '#b99569';
+      const floorMat = createFloorMaterial(floorColor, /tile|marble/i.test(interiorData.style || ''));
+      floorMat.wireframe = showWireframe;
       const floorMesh = new THREE.Mesh(floorGeo, floorMat);
       floorMesh.rotation.x = -Math.PI / 2;
       floorMesh.position.set(0, 0.01, 0);
@@ -419,8 +429,9 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       scene.add(floorMesh);
 
       // Room Perimeter Walls with decorative baseboard
+      const wallColor = interiorData.colorPalette?.find((swatch) => swatch.role === 'wall')?.hex || '#eee9df';
       const wallMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(interiorData.colorPalette?.[1]?.hex || '#f8fafc'),
+        color: new THREE.Color(wallColor),
         roughness: 0.9,
         wireframe: showWireframe,
       });
@@ -436,13 +447,75 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         createWallSegmentBetween(scene, polygonCorners[2], polygonCorners[3], wallThick, wallHeight, wallMat);
         createWallSegmentBetween(scene, polygonCorners[3], polygonCorners[0], wallThick, wallHeight, wallMat);
       } else {
-        // Back Wall (North)
-        createWallSegment(scene, roomW, wallThick, wallHeight, 0, wallHeight / 2, -roomL / 2, wallMat);
-        // Left Wall (West)
-        createWallSegment(scene, wallThick, roomL, wallHeight, -roomW / 2, wallHeight / 2, 0, wallMat);
-        // Right Wall (East) with window cutout simulation
-        createWallSegment(scene, wallThick, roomL, wallHeight, roomW / 2, wallHeight / 2, 0, wallMat);
+        // Back wall has a real window opening; the front wall and ceiling stay open for inspection.
+        const windowW = Math.min(1.7, roomW * 0.42);
+        const windowBottom = 0.88;
+        const windowTop = Math.min(2.15, wallHeight - 0.25);
+        const windowH = windowTop - windowBottom;
+        const sideW = (roomW - windowW) / 2;
+        const northZ = -roomL / 2;
+        createWallSegment(scene, sideW, wallThick, wallHeight, -(windowW + sideW) / 2, wallHeight / 2, northZ, wallMat);
+        createWallSegment(scene, sideW, wallThick, wallHeight, (windowW + sideW) / 2, wallHeight / 2, northZ, wallMat);
+        createWallSegment(scene, windowW, wallThick, windowBottom, 0, windowBottom / 2, northZ, wallMat);
+        createWallSegment(scene, windowW, wallThick, Math.max(0.1, wallHeight - windowTop), 0, windowTop + Math.max(0.1, wallHeight - windowTop) / 2, northZ, wallMat);
+        const outdoorGlow = new THREE.Mesh(
+          new THREE.BoxGeometry(windowW - 0.1, windowH - 0.1, 0.025),
+          new THREE.MeshStandardMaterial({ color: '#bacbc9', emissive: '#71827b', emissiveIntensity: 0.16, roughness: 0.88 })
+        );
+        outdoorGlow.position.set(0, windowBottom + windowH / 2, northZ - 0.015);
+        scene.add(outdoorGlow);
+        const glass = new THREE.MeshStandardMaterial({ color: '#b9d5dd', roughness: 0.16, metalness: 0.12, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
+        const windowPane = new THREE.Mesh(new THREE.BoxGeometry(windowW - 0.12, windowH - 0.12, 0.035), glass);
+        windowPane.position.set(0, windowBottom + windowH / 2, northZ + 0.075);
+        scene.add(windowPane);
+        const frameMat = new THREE.MeshStandardMaterial({ color: '#f5f1e8', roughness: 0.56 });
+        const frameDepth = 0.07;
+        for (const x of [-windowW / 2, 0, windowW / 2]) createWallSegment(scene, 0.055, frameDepth, windowH + 0.06, x, windowBottom + windowH / 2, northZ + 0.08, frameMat);
+        for (const y of [windowBottom, windowTop]) createWallSegment(scene, windowW + 0.06, frameDepth, 0.055, 0, y, northZ + 0.08, frameMat);
+        // Door aperture and a slightly ajar slab in the west wall.
+        const doorW = Math.min(0.92, roomL * 0.22);
+        const doorH = Math.min(2.15, wallHeight - 0.2);
+        const doorZ = roomL * 0.22;
+        const westX = -roomW / 2;
+        const westSegment = (roomL - doorW) / 2;
+        createWallSegment(scene, wallThick, westSegment, wallHeight, westX, wallHeight / 2, -doorZ - doorW / 2 - westSegment / 2, wallMat);
+        createWallSegment(scene, wallThick, westSegment, wallHeight, westX, wallHeight / 2, doorZ + doorW / 2 + westSegment / 2, wallMat);
+        createWallSegment(scene, wallThick, doorW, wallHeight - doorH, westX, doorH + (wallHeight - doorH) / 2, doorZ, wallMat);
+        const doorGroup = new THREE.Group();
+        const doorMat = new THREE.MeshStandardMaterial({ color: interiorData.colorPalette?.find((swatch) => swatch.role === 'secondary')?.hex || '#a7835e', roughness: 0.62 });
+        const door = new THREE.Mesh(new THREE.BoxGeometry(0.055, doorH - 0.03, doorW - 0.04), doorMat);
+        door.position.set(0.08, (doorH - 0.03) / 2, doorW / 2);
+        doorGroup.add(door);
+        doorGroup.position.set(westX + 0.08, 0, doorZ - doorW / 2);
+        doorGroup.rotation.y = -0.22;
+        scene.add(doorGroup);
+        const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshStandardMaterial({ color: '#a88750', metalness: 0.75, roughness: 0.24 }));
+        knob.position.set(westX + 0.12, 0.92, doorZ + 0.2);
+        scene.add(knob);
+        // Painted skirting and a narrow oak cap detail around the open room shell.
+        const trim = new THREE.MeshStandardMaterial({ color: '#f5f0e7', roughness: 0.72 });
+        const baseH = 0.12;
+        const baseZ = northZ + wallThick / 2 + 0.015;
+        createWallSegment(scene, roomW, 0.035, baseH, 0, baseH / 2, baseZ, trim);
+        const sideBase = (length: number, z: number) => createWallSegment(scene, 0.035, length, baseH, westX + wallThick / 2 + 0.015, baseH / 2, z, trim);
+        sideBase(westSegment, -doorZ - doorW / 2 - westSegment / 2);
+        sideBase(westSegment, doorZ + doorW / 2 + westSegment / 2);
+        createWallSegment(scene, 0.035, roomL, baseH, roomW / 2 - wallThick / 2 - 0.015, baseH / 2, 0, trim);
+        const caps = new THREE.MeshStandardMaterial({ color: '#d5c1a1', roughness: 0.55 });
+        createWallSegment(scene, roomW, wallThick + 0.04, 0.045, 0, wallHeight - 0.02, northZ, caps);
+        createWallSegment(scene, wallThick + 0.04, roomL, 0.045, roomW / 2, wallHeight - 0.02, 0, caps);
+        createWallSegment(scene, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, -doorZ - doorW / 2 - westSegment / 2, caps);
+        createWallSegment(scene, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, doorZ + doorW / 2 + westSegment / 2, caps);
       }
+
+      if (!polygonCorners) addStyledDecor(
+        scene,
+        roomW,
+        roomL,
+        interiorData.colorPalette || [],
+        interiorData.style || 'Japandi',
+        !interiorData.furniture?.some((item) => item.category === 'decor' || /rug/i.test(item.name))
+      );
 
       // Place Furniture Pieces
       furnitureObjectsRef.current = [];
@@ -452,8 +525,11 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         furnitureDataRef.current = interiorData.furniture.map((f) => ({ ...f }));
 
         interiorData.furniture.forEach((item) => {
-          let itemPosX = item.x + item.width / 2 - roomW / 2;
-          let itemPosZ = item.y + item.depth / 2 - roomL / 2;
+          const rotatedFootprint = (item.rotation || 0) % 180 !== 0;
+          const footprintWidth = rotatedFootprint ? item.depth : item.width;
+          const footprintDepth = rotatedFootprint ? item.width : item.depth;
+          let itemPosX = item.x + footprintWidth / 2 - roomW / 2;
+          let itemPosZ = item.y + footprintDepth / 2 - roomL / 2;
           if (polygonCorners) {
             const clamped = clampPointToPolygon(itemPosX, itemPosZ, polygonCorners);
             itemPosX = clamped.x;
@@ -461,61 +537,95 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
           }
           const rotRad = ((item.rotation || 0) * Math.PI) / 180;
 
-          const itemColor = new THREE.Color(item.color || interiorData.colorPalette?.[0]?.hex || '#4f46e5');
-
           let rootObject: THREE.Object3D;
 
           if (item.category === 'seating') {
             // Detailed Sofa / Armchair
-            rootObject = create3DSofa(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rootObject.position.set(itemPosX, 0, itemPosZ);
+            rootObject.rotation.y = rotRad;
+            scene.add(rootObject);
           } else if (item.category === 'table') {
             // Detailed Table
-            rootObject = create3DTable(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rootObject.position.set(itemPosX, 0, itemPosZ);
+            rootObject.rotation.y = rotRad;
+            scene.add(rootObject);
           } else if (item.category === 'storage') {
             // Credenza / Shelf
-            rootObject = create3DStorage(scene, item.width, item.depth, itemPosX, itemPosZ, rotRad, itemColor, showWireframe);
+            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rootObject.position.set(itemPosX, 0, itemPosZ);
+            rootObject.rotation.y = rotRad;
+            scene.add(rootObject);
           } else if (item.category === 'lighting') {
             // Floor Lamp
-            rootObject = create3DLamp(scene, itemPosX, itemPosZ, rotRad, itemColor);
+            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rootObject.position.set(itemPosX, 0, itemPosZ);
+            rootObject.rotation.y = rotRad;
+            scene.add(rootObject);
           } else if (item.category === 'decor') {
             // Flat Area Rug (wrapped in a group so it rotates like everything else)
             const rugGroup = new THREE.Group();
-            const rugGeo = new THREE.PlaneGeometry(item.width, item.depth);
-            const rugMat = new THREE.MeshStandardMaterial({
-              color: itemColor,
-              roughness: 0.95,
-              metalness: 0.0,
-            });
-            const rugMesh = new THREE.Mesh(rugGeo, rugMat);
-            rugMesh.rotation.x = -Math.PI / 2;
-            rugMesh.position.y = 0.02;
-            rugMesh.receiveShadow = true;
-            rugGroup.add(rugMesh);
+            const model = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rugGroup.add(model);
             rugGroup.position.set(itemPosX, 0, itemPosZ);
             rugGroup.rotation.y = rotRad;
             scene.add(rugGroup);
             rootObject = rugGroup;
           } else {
             // Standard bounding furniture volume
-            const defaultHeight = item.height || 0.75;
-            const geo = new THREE.BoxGeometry(item.width, defaultHeight, item.depth);
-            const mat = new THREE.MeshStandardMaterial({
-              color: itemColor,
-              roughness: 0.6,
-              wireframe: showWireframe,
-            });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(itemPosX, defaultHeight / 2, itemPosZ);
-            mesh.rotation.y = rotRad;
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-            scene.add(mesh);
-            rootObject = mesh;
+            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
+            rootObject.position.set(itemPosX, 0, itemPosZ);
+            rootObject.rotation.y = rotRad;
+            scene.add(rootObject);
           }
 
           rootObject.userData.furnitureId = item.id;
           rootObject.userData.category = item.category;
           furnitureObjectsRef.current.push(rootObject);
+
+          // Load the matched local GLB over the existing procedural fallback.
+          // Missing or invalid assets leave the fallback visible.
+          // The bundled starter GLBs are intentionally minimal primitives; keep
+          // the more detailed, style-aware procedural models visible for them.
+          // Replacing these with a curated model in /models automatically opts
+          // into GLTFLoader while retaining the same fallback on load failure.
+          if (item.assetUrl && !item.assetUrl.startsWith('/assets/furniture/')) {
+            const fallback = rootObject;
+            new GLTFLoader().load(item.assetUrl, (gltf) => {
+              const model = gltf.scene;
+              const bounds = new THREE.Box3().setFromObject(model);
+              const size = bounds.getSize(new THREE.Vector3());
+              if (size.x <= 0 || size.y <= 0 || size.z <= 0) return;
+              const targetHeight = item.height || (item.category === 'seating' ? 0.95 : 0.8);
+              model.scale.set(item.width / size.x, targetHeight / size.y, item.depth / size.z);
+              model.updateMatrixWorld(true);
+              const scaledBounds = new THREE.Box3().setFromObject(model);
+              model.position.set(itemPosX, -scaledBounds.min.y, itemPosZ);
+              model.rotation.y = rotRad;
+              model.traverse((child) => {
+                if (!(child instanceof THREE.Mesh)) return;
+                child.castShadow = true;
+                child.receiveShadow = true;
+                const tint = new THREE.Color(item.color || interiorData.colorPalette?.[0]?.hex || '#b8a58d');
+                const tintMaterial = (material: THREE.Material) => {
+                  const clone = material.clone();
+                  if ('color' in clone && (clone as THREE.MeshStandardMaterial).color) {
+                    (clone as THREE.MeshStandardMaterial).color.lerp(tint, 0.22);
+                  }
+                  return clone;
+                };
+                child.material = Array.isArray(child.material) ? child.material.map(tintMaterial) : tintMaterial(child.material);
+              });
+              model.userData.furnitureId = item.id;
+              model.userData.category = item.category;
+              scene.remove(fallback);
+              scene.add(model);
+              const index = furnitureObjectsRef.current.indexOf(fallback);
+              if (index >= 0) furnitureObjectsRef.current[index] = model;
+              if (selectedFurnitureId === item.id) transformControlsRef.current?.attach(model);
+            }, undefined, () => { /* Keep the procedural fallback when an asset is unavailable. */ });
+          }
         });
       }
     }
@@ -788,11 +898,14 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
     if (transformControlsRef.current?.getMode() !== 'translate') return;
 
-    const rawX = object.position.x + roomW / 2 - current.width / 2;
-    const rawY = object.position.z + roomL / 2 - current.depth / 2;
+    const rotatedFootprint = Math.round(current.rotation / 90) % 2 !== 0;
+    const footprintWidth = rotatedFootprint ? current.depth : current.width;
+    const footprintDepth = rotatedFootprint ? current.width : current.depth;
+    const rawX = object.position.x + roomW / 2 - footprintWidth / 2;
+    const rawY = object.position.z + roomL / 2 - footprintDepth / 2;
 
-    const maxX = Math.max(0, roomW - current.width);
-    const maxY = Math.max(0, roomL - current.depth);
+    const maxX = Math.max(0, roomW - footprintWidth);
+    const maxY = Math.max(0, roomL - footprintDepth);
     const clampedX = Math.min(Math.max(rawX, 0), maxX);
     const clampedY = Math.min(Math.max(rawY, 0), maxY);
 
@@ -803,15 +916,15 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
     if (overlapsOther) {
       // Reject the move: snap the mesh back to its last valid position.
-      object.position.x = current.x + current.width / 2 - roomW / 2;
-      object.position.z = current.y + current.depth / 2 - roomL / 2;
+      object.position.x = current.x + footprintWidth / 2 - roomW / 2;
+      object.position.z = current.y + footprintDepth / 2 - roomL / 2;
       return;
     }
 
     current.x = clampedX;
     current.y = clampedY;
-    object.position.x = clampedX + current.width / 2 - roomW / 2;
-    object.position.z = clampedY + current.depth / 2 - roomL / 2;
+    object.position.x = clampedX + footprintWidth / 2 - roomW / 2;
+    object.position.z = clampedY + footprintDepth / 2 - roomL / 2;
   };
 
   // Attach/detach TransformControls to whichever furniture object matches
@@ -1160,6 +1273,17 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         </div>
 
         {/* Wireframe toggle */}
+        <button
+          onClick={() => setShowGrid(!showGrid)}
+          title={showGrid ? 'Hide floor grid' : 'Show floor grid'}
+          className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border cursor-pointer ${
+            showGrid
+              ? 'bg-stone-800 text-white border-stone-700'
+              : 'text-stone-400 border-transparent hover:text-white'
+          }`}
+        >
+          Grid {showGrid ? 'On' : 'Off'}
+        </button>
         <button
           onClick={() => setShowWireframe(!showWireframe)}
           className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border cursor-pointer ${

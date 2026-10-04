@@ -88,6 +88,9 @@ export interface FurnitureItem {
   color?: string;
   notes?: string;
   estimatedPrice?: string;
+  preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  assetId?: string;
+  assetUrl?: string;
 }
 
 export interface ColorSwatch {
@@ -108,6 +111,10 @@ export interface InteriorDesignResult {
   lightingSuggestions: string;
   materialFinishes?: string;
   designPhilosophy?: string;
+  designSuggestions?: string[];
+  additionalRequirements?: string;
+  preferredColors?: string[];
+  layoutWarnings?: string[];
 }
 
 // Workflow 3: Existing House Reconstruction Types

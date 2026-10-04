@@ -95,6 +95,9 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   const [roomType, setRoomType] = useState<string>('Living Room');
   const [style, setStyle] = useState<DesignStyle>(initialStyle || 'japandi');
   const [budget, setBudget] = useState<string>('$15,000 - $25,000');
+  const [preferredColors, setPreferredColors] = useState('');
+  const [additionalRequirements, setAdditionalRequirements] = useState('');
+  const [phaseOneJson, setPhaseOneJson] = useState('');
 
   // Synchronize if initialStyle changes from props
   useEffect(() => {
@@ -137,12 +140,40 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
     }, 1100);
 
     try {
+      let openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[] = [];
+      if (phaseOneJson.trim()) {
+        let plan: any;
+        try { plan = JSON.parse(phaseOneJson); } catch { throw new Error('Phase 1 floor plan must be valid JSON.'); }
+        const source = plan?.data && typeof plan.data === 'object' ? plan.data : plan;
+        const rooms = Array.isArray(source?.rooms) ? source.rooms : [];
+        if (!rooms.length) throw new Error('Phase 1 JSON must contain a rooms array.');
+        const room = rooms.find((item: any) => String(item.type || item.name).toLowerCase().includes(roomType.split(' ')[0].toLowerCase())) || rooms[0];
+        const width = Number(room.width);
+        const depth = Number(room.height ?? room.length);
+        if (width > 0 && depth > 0) { setRoomWidth(width); setRoomLength(depth); }
+        for (const [side, kind, field] of [['doorSide', 'door', 'doorSide'], ['windowSide', 'window', 'windowSide']] as const) {
+          const wall = room[field];
+          if (!['top', 'bottom', 'left', 'right', 'north', 'south', 'east', 'west'].includes(wall)) continue;
+          const normalized = ({ top: 'north', bottom: 'south', left: 'west', right: 'east', north: 'north', south: 'south', east: 'east', west: 'west' } as const)[wall as 'top'];
+          const span = normalized === 'north' || normalized === 'south' ? width : depth;
+          openings.push({ wall: normalized, start: span * 0.4, end: span * 0.6, type: kind });
+        }
+        const finalWidth = width > 0 ? width : roomWidth;
+        const finalDepth = depth > 0 ? depth : roomLength;
+        const generated = await generateInteriorApi({ roomWidth: finalWidth, roomLength: finalDepth, style, budget, roomType: room.name || roomType, preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean), additionalRequirements, openings });
+        setResult(generated);
+        if (generated.furniture.length) onSelectFurniture?.(generated.furniture[0].id);
+        return;
+      }
       const generated = await generateInteriorApi({
         roomWidth,
         roomLength,
         style,
         budget,
         roomType,
+        preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean),
+        additionalRequirements,
+        openings,
       });
 
       setResult(generated);
@@ -261,6 +292,20 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="text-[11px] text-stone-500 block mb-1" htmlFor="interior-colors">Preferred colors</label>
+                <input id="interior-colors" value={preferredColors} onChange={(e) => setPreferredColors(e.target.value)} placeholder="e.g. sage green, warm oak" className="w-full px-3 py-2 border border-stone-200 rounded-lg text-xs" />
+              </div>
+              <div>
+                <label className="text-[11px] text-stone-500 block mb-1" htmlFor="interior-requirements">Additional requirements</label>
+                <textarea id="interior-requirements" value={additionalRequirements} onChange={(e) => setAdditionalRequirements(e.target.value)} maxLength={1000} rows={2} placeholder="Accessibility, existing furniture, pets..." className="w-full px-3 py-2 border border-stone-200 rounded-lg text-xs resize-y" />
+              </div>
+              <details className="text-xs text-stone-600">
+                <summary className="cursor-pointer font-medium">Use a Phase 1 floor plan JSON (optional)</summary>
+                <p className="mt-2 text-[10px] text-stone-500">Paste the generated floor plan JSON to inherit the room dimensions and keep furniture clear of its door and window walls.</p>
+                <textarea value={phaseOneJson} onChange={(e) => setPhaseOneJson(e.target.value)} rows={5} placeholder='{"plotWidth":8,"plotLength":10,"rooms":[...]}' className="mt-2 w-full px-3 py-2 border border-stone-200 rounded-lg text-[10px] font-mono" />
+              </details>
+
               <div className="text-xs text-stone-500 flex justify-between pt-1">
                 <span>Floor area</span>
                 <span className="font-medium text-stone-800">
@@ -351,7 +396,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                     <span>Generating Interior Plan...</span>
                   </>
                 ) : (
-                  <span>Generate Interior Design</span>
+                  <span>{result ? 'Regenerate Design' : 'Generate Interior Design'}</span>
                 )}
               </button>
 
@@ -434,9 +479,9 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                       y="0"
                       width={result.roomWidth}
                       height={result.roomLength}
-                      fill="#fafaf9"
+                      fill="url(#interior-grid)"
                       stroke="#292524"
-                      strokeWidth="0.2"
+                      strokeWidth="0.12"
                       rx="0.05"
                     />
 
@@ -451,20 +496,25 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                     />
 
                     {/* Furniture rects */}
-                    {result.furniture.map((item) => {
+                    {[...result.furniture].sort((a, b) => Number(a.category !== 'decor') - Number(b.category !== 'decor')).map((item) => {
                       const isSelected = selectedFurnitureId === item.id;
                       const rot = item.rotation || 0;
-                      const cx = item.x + item.width / 2;
-                      const cy = item.y + item.depth / 2;
+                      const turned = (item.rotation || 0) % 180 !== 0;
+                      const footprintWidth = turned ? item.depth : item.width;
+                      const footprintDepth = turned ? item.width : item.depth;
+                      const cx = item.x + footprintWidth / 2;
+                      const cy = item.y + footprintDepth / 2;
+                      const itemNumber = result.furniture.findIndex((candidate) => candidate.id === item.id) + 1;
                       return (
                         <g
                           key={item.id}
                           onClick={() => onSelectFurniture?.(item.id)}
                           className="cursor-pointer"
                         >
+                          <title>{`${item.name} · ${item.width}m × ${item.depth}m`}</title>
                           <rect
-                            x={item.x}
-                            y={item.y}
+                            x={cx - item.width / 2}
+                            y={cy - item.depth / 2}
                             width={item.width}
                             height={item.depth}
                             transform={rot !== 0 ? `rotate(${rot}, ${cx}, ${cy})` : undefined}
@@ -475,14 +525,14 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                             rx="0.08"
                             className="transition-all"
                           />
-                          <text
-                            x={cx}
-                            y={cy + 0.08}
-                            textAnchor="middle"
-                            className="text-[0.24px] font-medium fill-stone-900 pointer-events-none"
-                          >
-                            {item.name}
-                          </text>
+                          {item.category !== 'decor' && (
+                            <g className="pointer-events-none">
+                              <circle cx={item.x + footprintWidth - 0.2} cy={item.y + 0.2} r="0.16" fill={isSelected ? '#292524' : '#ffffff'} stroke="#57534e" strokeWidth="0.035" />
+                              <text x={item.x + footprintWidth - 0.2} y={item.y + 0.25} textAnchor="middle" fontSize="0.14" fontWeight="700" fill={isSelected ? '#ffffff' : '#292524'}>
+                                {String(itemNumber).padStart(2, '0')}
+                              </text>
+                            </g>
+                          )}
                         </g>
                       );
                     })}
@@ -553,6 +603,20 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
             </div>
           )}
 
+          {result?.designSuggestions?.length ? (
+            <div className="bg-white rounded-2xl border border-stone-200/80 p-5 space-y-2">
+              <h4 className="text-xs font-semibold text-stone-900">Design Suggestions</h4>
+              <ul className="list-disc pl-4 space-y-1 text-xs text-stone-600">
+                {result.designSuggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}
+              </ul>
+              <p className="text-[10px] text-stone-400">Local 3D asset matching is used when a library model is available; other items use the built-in fallback model.</p>
+            </div>
+          ) : null}
+
+          {result?.layoutWarnings?.map((warning, index) => (
+            <div key={index} role="status" className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">{warning}</div>
+          ))}
+
           {/* Curated Furniture Cards */}
           {result && (
             <div className="bg-white rounded-2xl border border-stone-200/80 p-5 space-y-3">
@@ -561,7 +625,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
               </h4>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[340px] overflow-y-auto pr-1">
-                {result.furniture.map((item) => {
+                {result.furniture.map((item, index) => {
                   const isSelected = selectedFurnitureId === item.id;
                   return (
                     <div
@@ -574,8 +638,9 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <span className="text-xs font-medium text-stone-900">
-                          {item.name}
+                        <span className="flex items-start gap-2 min-w-0 text-xs font-medium text-stone-900">
+                          <span className="shrink-0 rounded-full bg-stone-100 px-1.5 py-0.5 text-[9px] tabular-nums text-stone-600">{String(index + 1).padStart(2, '0')}</span>
+                          <span className="break-words">{item.name}</span>
                         </span>
                         <span className="text-[10px] text-stone-600 bg-stone-100 px-1.5 py-0.5 rounded-md shrink-0">
                           {item.estimatedPrice || 'Curated'}

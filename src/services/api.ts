@@ -204,6 +204,9 @@ export async function generateInteriorApi(params: {
   style: string;
   budget: string;
   roomType: string;
+  preferredColors: string[];
+  additionalRequirements: string;
+  openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
 }): Promise<InteriorDesignResult> {
   const res = await fetchWithTimeout(`${API_BASE}/gemini/interior`, {
     method: 'POST',
