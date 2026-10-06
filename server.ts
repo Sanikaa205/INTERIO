@@ -392,7 +392,7 @@ app.delete('/api/projects/:id', (req, res) => {
 // ----------------------------------------------------
 app.post('/api/gemini/floorplan', async (req, res) => {
   try {
-    const { plotWidth, plotLength, rooms } = req.body;
+    const { plotWidth, plotLength, rooms, userRequirements = '' } = req.body;
 
     const width = Number(plotWidth) || 10;
     const length = Number(plotLength) || 12;
@@ -403,93 +403,36 @@ app.post('/api/gemini/floorplan', async (req, res) => {
       { name: 'Bathroom', type: 'bathroom', minSize: 5 },
     ];
 
-    const prompt = `You are a licensed master architectural draftsperson and BIM engineer.
-Generate a strictly non-overlapping, architecturally sound 2D floor plan layout for a plot with dimensions:
-- Plot Width: ${width} meters (along X axis, from 0 to ${width})
-- Plot Length / Depth: ${length} meters (along Y axis, from 0 to ${length})
-
-The user requested the following rooms:
-${roomList.map((r: any, idx: number) => `${idx + 1}. "${r.name}" (Type: ${r.type}, Target min size: ${r.minSize || 10} m²)`).join('\n')}
-
-CRITICAL ARCHITECTURAL RULES:
-1. Coordinate Boundaries: For every room, 0 <= x < ${width}, 0 <= y < ${length}, x + width <= ${width}, y + height <= ${length}.
-2. Strict Non-Overlapping: No room rectangle may intersect or overlap with another room rectangle.
-3. Sensible Adjacency:
-   - Kitchen should be adjacent or close to Dining / Living areas.
-   - Bathrooms should be located conveniently near bedrooms or accessible from a central circulation hallway.
-   - Master bedroom should have privacy.
-   - Leave clean circulation corridors/entryways so all rooms can be entered logically.
-4. Dimensions in Meters: Width and height must be realistic (e.g. bedrooms at least 3m x 3.5m, bathrooms 1.8m x 2.2m, etc.).
-5. Provide a specific doorSide ('top' | 'bottom' | 'left' | 'right') and optional windowSide for each room.
-6. Provide an attractive, subtle hex color for room classification (e.g. living room: #6366f1, kitchen: #10b981, master-bedroom: #8b5cf6, bedroom: #ec4899, bathroom: #06b6d4, dining: #0ea5e9, hallway: #94a3b8, office: #f59e0b).
-
-Return STRICT JSON ONLY, adhering exactly to this JSON schema without markdown wraps if possible:
-{
-  "plotWidth": ${width},
-  "plotLength": ${length},
-  "totalBuiltArea": <number in m²>,
-  "openSpaceArea": <number in m²>,
-  "architecturalStyle": "<e.g. Modern Open-Plan, Contemporary Split-Wing, Neo-Classical>",
-  "designNotes": "<brief architectural critique and circulation flow description>",
-  "rooms": [
-    {
-      "id": "room_1",
-      "name": "Living Room",
-      "type": "living-room",
-      "x": <number>,
-      "y": <number>,
-      "width": <number>,
-      "height": <number>,
-      "doorSide": "bottom",
-      "windowSide": "top",
-      "color": "#6366f1",
-      "adjacentTo": ["Dining Room", "Hallway"]
-    }
-  ]
-}`;
-
     const ai = getGeminiClient();
-    if (!ai) {
-      const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
-      fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
-      return res.json(fallbackResult);
-    }
-
-    let text = '';
-    try {
-      text = await generateGeminiContentWithFallback(ai, prompt, {
-        temperature: 0.2,
-        responseMimeType: 'application/json',
-      });
-    } catch (aiErr: any) {
-      console.log('[INTERIO Engine] Synthesizing layout using parametric architectural algorithm.');
-      const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
-      fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
-      fallbackResult.designNotes = `${fallbackResult.designNotes} (Optimized with INTERIO parametric layout algorithm).`;
-      return res.json(fallbackResult);
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      parsed = JSON.parse(cleanJson);
-    }
-
-    if (parsed && Array.isArray(parsed.rooms)) {
-      parsed.rooms = sanitizeRoomCoordinates(parsed.rooms, width, length);
-      return res.json(parsed);
+    if (ai) {
+      const prompt = createFloorPlanPrompt(width, length, roomList, String(userRequirements || '').slice(0, 1000));
+      try {
+        const text = await generateGeminiContentWithFallback(ai, prompt, {
+          temperature: 0.15,
+          responseMimeType: 'application/json',
+        });
+        const parsed = parseJsonResponse(text);
+        const validated = validateGeminiFloorPlan(parsed, width, length, roomList);
+        if (validated) return res.json(validated);
+        console.warn('[INTERIO Engine] Gemini returned a floor plan that failed geometry validation; using deterministic fallback.');
+      } catch (geminiErr: any) {
+        console.warn(`[INTERIO Engine] Gemini floor-plan generation failed: ${geminiErr?.message || geminiErr}`);
+      }
     }
 
     const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
-    fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, width, length);
+    if (fallbackResult.constraintError) {
+      return res.status(422).json({ error: fallbackResult.constraintError });
+    }
     return res.json(fallbackResult);
   } catch (err: any) {
-    console.log('[INTERIO Engine] Floor plan routed through parametric generator.');
+    console.error('[INTERIO Engine] Floor-plan generation failed:', err);
     const fbWidth = Number(req.body.plotWidth) || 10;
     const fbLength = Number(req.body.plotLength) || 12;
     const fallbackResult = generateAlgorithmicFloorPlan(fbWidth, fbLength, req.body.rooms || []);
+    if (fallbackResult.constraintError) {
+      return res.status(422).json({ error: fallbackResult.constraintError });
+    }
     fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, fbWidth, fbLength);
     return res.json(fallbackResult);
   }
@@ -588,6 +531,225 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
 // ----------------------------------------------------
 // ALGORITHMIC FALLBACKS & SANITIZERS
 // ----------------------------------------------------
+function createFloorPlanPrompt(plotW: number, plotL: number, roomList: any[], userRequirements: string): string {
+  const plotArea = roundPlan(plotW * plotL);
+  const requestedRooms = roomList.map((room: any, index: number) =>
+    `${index + 1}. "${String(room.name || `Room ${index + 1}`)}" (type: ${room.type || 'room'}, minimum area: ${Number(room.minSize) || 10} m²)`
+  ).join('\n');
+
+  return `You are an experienced residential architect producing a buildable conceptual 2D floor plan.
+Create a complete, measured layout for a rectangular plot:
+- plot width: ${plotW} m
+- plot length: ${plotL} m
+- total plot area: ${plotArea} m²
+
+Requested rooms:
+${requestedRooms}
+
+User requirements:
+${userRequirements || 'No additional requirements. Use a practical residential entry, circulation spine, daylight, and privacy zoning.'}
+
+Use the full available footprint efficiently. Calculate room dimensions from the actual plot area and requested minimum areas; do not invent a different plot size. Keep a 0.25 m exterior planning margin and reserve only purposeful circulation/entry space. The requested rooms must fit completely inside the plot, with no overlap and no large meaningless leftover area. Prefer realistic rectangular proportions: living rooms 1.4:1 to 2.2:1, bedrooms 1.1:1 to 1.8:1, bathrooms 1.2:1 to 2.2:1.
+
+Return JSON only. Every coordinate is in metres from the plot's top-left corner. Room and furniture coordinates are absolute plot coordinates. Include every requested room exactly once, plus an optional circulation array. Do not include images, URLs, base64, or markdown.
+
+JSON shape:
+{
+  "plotWidth": ${plotW},
+  "plotLength": ${plotL},
+  "plotArea": ${plotArea},
+  "architecturalStyle": "Contemporary residential",
+  "designNotes": "brief zoning and entry explanation",
+  "circulation": [{"name":"Entry / Hallway","x":0,"y":0,"width":1,"height":1}],
+  "rooms": [{
+    "id": "room_1",
+    "name": "requested room name",
+    "type": "room type",
+    "x": 0,
+    "y": 0,
+    "width": 4,
+    "height": 4,
+    "area": 16,
+    "walls": [
+      {"side":"top","thickness":0.2},{"side":"bottom","thickness":0.2},
+      {"side":"left","thickness":0.2},{"side":"right","thickness":0.2}
+    ],
+    "doors": [{"side":"bottom","offset":1.2,"width":0.9,"swing":"in"}],
+    "windows": [{"side":"top","offset":1.4,"width":1.5}],
+    "adjacentTo": ["Hallway"],
+    "furniture": [{"id":"f_1","name":"fixture or furniture","category":"furniture","x":0.5,"y":0.5,"width":1.8,"height":0.8,"rotation":0}]
+  }]
+}
+
+Doors must face a circulation or entry edge, have a swing that stays inside the room, and not block another door. Give bedrooms/living/kitchen daylight windows; bathrooms may use a smaller high-level window. Use furniture/fixtures only where useful, keep each item inside its room, and never overlap furniture items.`;
+}
+
+function parseJsonResponse(text: string): any {
+  const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  return JSON.parse(cleaned);
+}
+
+function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requestedRooms: any[]) {
+  if (!parsed || !Array.isArray(parsed.rooms) || parsed.rooms.length !== requestedRooms.length) return null;
+
+  const byName = new Map<string, any>();
+  for (const room of parsed.rooms) {
+    if (!room || typeof room !== 'object') return null;
+    const key = String(room.name || '').trim().toLowerCase();
+    if (!key || byName.has(key)) return null;
+    byName.set(key, room);
+  }
+
+  const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
+  const rooms: any[] = [];
+  for (let index = 0; index < requestedRooms.length; index++) {
+    const requested = requestedRooms[index];
+    const raw = byName.get(String(requested.name || '').trim().toLowerCase());
+    if (!raw) return null;
+
+    const x = Number(raw.x);
+    const y = Number(raw.y);
+    const width = Number(raw.width);
+    const height = Number(raw.height);
+    const minimumArea = Math.max(Number(requested.minSize) || 0, practicalArea(requested.type));
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    if (x < 0 || y < 0 || x + width > plotW + 0.001 || y + height > plotL + 0.001) return null;
+    if (width * height < minimumArea * 0.95 || !hasPracticalDimensions({ type: requested.type, width, height })) return null;
+
+    const doors = normalizeGeminiDoors(raw.doors, raw.doorSide, width, height);
+    const windows = normalizeGeminiWindows(raw.windows, raw.windowSide, width, height);
+    if (!doors.length) return null;
+    const furniture = normalizeGeminiFurniture(raw.furniture, x, y, width, height);
+    if (furniture === null) return null;
+
+    rooms.push({
+      ...raw,
+      id: String(raw.id || `room_${index + 1}`),
+      name: String(requested.name),
+      type: requested.type || raw.type || 'room',
+      x: roundPlan(x),
+      y: roundPlan(y),
+      width: roundPlan(width),
+      height: roundPlan(height),
+      area: roundPlan(width * height),
+      walls: normalizeGeminiWalls(raw.walls),
+      doors,
+      windows,
+      doorSide: doors[0].side,
+      windowSide: windows[0]?.side,
+      color: /^#[0-9a-f]{6}$/i.test(String(raw.color || '')) ? raw.color : palette[index % palette.length],
+      furniture,
+    });
+  }
+
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (roomRectsOverlap(rooms[i], rooms[j])) return null;
+    }
+  }
+
+  const builtArea = rooms.reduce((sum, room) => sum + room.area, 0);
+  if (builtArea / (plotW * plotL) < 0.45) return null;
+  const circulation = normalizeCirculation(parsed.circulation, plotW, plotL, rooms);
+  if (circulation === null) return null;
+
+  return {
+    plotWidth: plotW,
+    plotLength: plotL,
+    plotArea: roundPlan(plotW * plotL),
+    totalBuiltArea: roundPlan(builtArea),
+    openSpaceArea: roundPlan(Math.max(0, plotW * plotL - builtArea)),
+    architecturalStyle: String(parsed.architecturalStyle || 'Contemporary residential').slice(0, 80),
+    designNotes: String(parsed.designNotes || 'Rooms are arranged around a purposeful entry and circulation spine.').slice(0, 800),
+    circulation,
+    rooms,
+  };
+}
+
+function normalizeGeminiWalls(walls: any): any[] {
+  const sides = ['top', 'bottom', 'left', 'right'];
+  return sides.map((side) => {
+    const match = Array.isArray(walls) ? walls.find((wall: any) => wall?.side === side) : null;
+    return { side, thickness: Math.max(0.1, Math.min(0.5, Number(match?.thickness) || 0.2)) };
+  });
+}
+
+function normalizeGeminiDoors(doors: any, fallbackSide: any, width: number, height: number): any[] {
+  const validSides = ['top', 'bottom', 'left', 'right'];
+  const source = Array.isArray(doors) ? doors : [{ side: fallbackSide || 'bottom' }];
+  return source.slice(0, 3).filter((door: any) => validSides.includes(door?.side)).map((door: any) => ({
+    side: door.side,
+    offset: Math.max(0.1, Math.min((door.side === 'left' || door.side === 'right' ? height : width) - 0.1, Number(door.offset) || 0.3)),
+    width: Math.max(0.6, Math.min(1.1, Number(door.width) || 0.9)),
+    swing: ['in', 'out', 'left', 'right'].includes(door.swing) ? door.swing : 'in',
+  }));
+}
+
+function normalizeGeminiWindows(windows: any, fallbackSide: any, width: number, height: number): any[] {
+  const validSides = ['top', 'bottom', 'left', 'right'];
+  const source = Array.isArray(windows) ? windows : (fallbackSide ? [{ side: fallbackSide }] : []);
+  return source.slice(0, 4).filter((window: any) => validSides.includes(window?.side)).map((window: any) => ({
+    side: window.side,
+    offset: Math.max(0.1, Math.min((window.side === 'left' || window.side === 'right' ? height : width) - 0.1, Number(window.offset) || 0.4)),
+    width: Math.max(0.5, Math.min(2.4, Number(window.width) || 1.2)),
+  }));
+}
+
+function normalizeGeminiFurniture(items: any, roomX: number, roomY: number, roomW: number, roomH: number): any[] | null {
+  if (items === undefined) return [];
+  if (!Array.isArray(items)) return null;
+  const normalized = items.slice(0, 20).map((item: any, index: number) => ({
+    id: String(item?.id || `f_${index + 1}`),
+    name: String(item?.name || 'Fixture'),
+    category: ['furniture', 'fixture', 'sanitary'].includes(item?.category) ? item.category : 'fixture',
+    x: Number(item?.x),
+    y: Number(item?.y),
+    width: Number(item?.width),
+    height: Number(item?.height),
+    rotation: Number(item?.rotation) || 0,
+  }));
+  if (normalized.some((item) => ![item.x, item.y, item.width, item.height].every(Number.isFinite) ||
+    item.width <= 0 || item.height <= 0 ||
+    item.x < roomX || item.y < roomY ||
+    item.x + item.width > roomX + roomW + 0.001 ||
+    item.y + item.height > roomY + roomH + 0.001)) return null;
+  for (let i = 0; i < normalized.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (floorPlanFurnitureOverlap(normalized[i], normalized[j])) return null;
+    }
+
+    function floorPlanFurnitureOverlap(
+      a: { x: number; y: number; width: number; height: number },
+      b: { x: number; y: number; width: number; height: number }
+    ): boolean {
+      const EPS = 1e-6;
+      return (
+        a.x < b.x + b.width - EPS &&
+        a.x + a.width > b.x + EPS &&
+        a.y < b.y + b.height - EPS &&
+        a.y + a.height > b.y + EPS
+      );
+    }
+  }
+  return normalized;
+}
+
+function normalizeCirculation(items: any, plotW: number, plotL: number, rooms: any[]): any[] | null {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const circulation = items.slice(0, 12).map((item: any) => ({
+    name: String(item?.name || 'Circulation'),
+    x: Number(item?.x),
+    y: Number(item?.y),
+    width: Number(item?.width),
+    height: Number(item?.height),
+  }));
+  if (circulation.some((item) => ![item.x, item.y, item.width, item.height].every(Number.isFinite) ||
+    item.x < 0 || item.y < 0 || item.width <= 0 || item.height <= 0 ||
+    item.x + item.width > plotW + 0.001 || item.y + item.height > plotL + 0.001)) return null;
+  if (circulation.some((corridor) => rooms.some((room) => roomRectsOverlap(corridor, room)))) return null;
+  return circulation;
+}
+
 // Clamp every room to the plot boundary, then resolve any overlapping
 // pairs by nudging the later room apart along whichever axis clears the
 // overlap with the smaller shift -- mirrors sanitizeFurnitureCoordinates
@@ -738,6 +900,156 @@ function furnitureRectsOverlap(
 }
 
 function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[]) {
+  const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
+  const requested = (requestedRooms.length ? requestedRooms : [
+    { name: 'Living Room', type: 'living-room', minSize: 20 },
+    { name: 'Kitchen', type: 'kitchen', minSize: 12 },
+    { name: 'Master Bedroom', type: 'master-bedroom', minSize: 16 },
+    { name: 'Bathroom', type: 'bathroom', minSize: 5 },
+  ]).map((room: any, index: number) => ({
+    id: room.id || `room_${index + 1}`,
+    name: String(room.name || `Room ${index + 1}`).slice(0, 80),
+    type: room.type || 'bedroom',
+    targetArea: Math.max(Number(room.minSize) || 10, practicalArea(room.type)),
+  }));
+
+  const edge = 0.25;
+  const clearWidth = Math.max(1.8, plotW - edge * 2);
+  const clearLength = Math.max(1.8, plotL - edge * 2);
+  const netArea = clearWidth * clearLength;
+  const columns = chooseLayoutColumns(requested, clearWidth, clearLength);
+  const rows = chunkRooms(requested, columns);
+  const corridor = requested.length > 1 ? Math.min(1, Math.max(0.8, Math.min(clearWidth, clearLength) * 0.055)) : 0;
+  const usableWidth = clearWidth - Math.max(0, columns - 1) * corridor;
+  const usableLength = clearLength - Math.max(0, rows.length - 1) * corridor;
+  const requestedArea = requested.reduce((sum: number, room: any) => sum + room.targetArea, 0);
+  const constrained = requestedArea > usableWidth * usableLength;
+  const rowWeights = rows.map((row) => row.reduce((sum: number, room: any) => sum + room.targetArea, 0));
+  const totalWeight = rowWeights.reduce((sum, weight) => sum + weight, 0) || 1;
+  const rooms: any[] = [];
+  let y = edge;
+
+  rows.forEach((row, rowIndex) => {
+    const rowHeight = usableLength * (rowWeights[rowIndex] / totalWeight);
+    const rowWeight = rowWeights[rowIndex] || 1;
+    let x = edge;
+    row.forEach((room, colIndex) => {
+      const width = usableWidth * (room.targetArea / rowWeight);
+      const doorSide = doorFacingCirculation(rowIndex, rows.length, colIndex, row.length);
+      const windowSide = exteriorWindowSide(rowIndex, rows.length, colIndex, row.length, doorSide);
+      rooms.push({
+        id: room.id,
+        name: room.name,
+        type: room.type,
+        x: roundPlan(x),
+        y: roundPlan(y),
+        width: roundPlan(width),
+        height: roundPlan(rowHeight),
+        doorSide,
+        windowSide,
+        color: palette[rooms.length % palette.length],
+        adjacentTo: [],
+        area: roundPlan(width * rowHeight),
+      });
+      x += width + corridor;
+    });
+    y += rowHeight + corridor;
+  });
+
+  const totalBuiltArea = roundPlan(rooms.reduce((sum, room) => sum + room.area, 0));
+  const circulationArea = Math.max(0, roundPlan(netArea - totalBuiltArea));
+  const minimumIssue = rooms.some((room) => !hasPracticalDimensions(room));
+  const constraintNote = constrained
+    ? ` Requested program (${roundPlan(requestedArea)} m²) is larger than the ${roundPlan(usableWidth * usableLength)} m² net room area after required circulation. Rooms were proportionally compacted within the plot; review the labelled dimensions before construction.`
+    : '';
+
+  return {
+    plotWidth: plotW,
+    plotLength: plotL,
+    plotArea: roundPlan(plotW * plotL),
+    totalBuiltArea,
+    openSpaceArea: roundPlan(Math.max(0, plotW * plotL - totalBuiltArea)),
+    architecturalStyle: 'Area-Optimized Residential Plan',
+    designNotes: `Each requested room is sized from its target area and placed inside a ${roundPlan(netArea)} m² net envelope within the measured ${roundPlan(plotW * plotL)} m² plot. ${roundPlan(circulationArea)} m² is reserved as continuous circulation/entry clearance; doors face that clearance and windows face an exterior wall.${constraintNote}`,
+    circulation: [
+      {
+        name: 'Entry clearance',
+        x: 0,
+        y: roundPlan(plotL - edge),
+        width: roundPlan(plotW),
+        height: roundPlan(edge),
+      },
+    ],
+    rooms,
+    constraintError: minimumIssue
+      ? `The ${plotW}m × ${plotL}m plot cannot accommodate all requested rooms with the minimum practical room dimensions and circulation clearance. Reduce room sizes/count or increase the plot dimensions.`
+      : undefined,
+  };
+}
+
+function practicalArea(type: string | undefined): number {
+  const normalized = String(type || '').toLowerCase();
+  if (normalized.includes('bath') || normalized.includes('powder')) return 3.5;
+  if (normalized.includes('kitchen')) return 7;
+  if (normalized.includes('living')) return 14;
+  if (normalized.includes('bed')) return 9;
+  return 6;
+}
+
+function chunkRooms(rooms: any[], columns: number): any[][] {
+  const rows: any[][] = [];
+  for (let index = 0; index < rooms.length; index += columns) rows.push(rooms.slice(index, index + columns));
+  return rows;
+}
+
+function chooseLayoutColumns(rooms: any[], width: number, length: number): number {
+  const maxColumns = Math.min(4, rooms.length);
+  let bestColumns = 1;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let columns = 1; columns <= maxColumns; columns++) {
+    const rows = chunkRooms(rooms, columns);
+    const rowWeights = rows.map((row) => row.reduce((sum, room) => sum + room.targetArea, 0));
+    const total = rowWeights.reduce((sum, value) => sum + value, 0) || 1;
+    let score = 0;
+    rows.forEach((row, rowIndex) => {
+      const height = length * rowWeights[rowIndex] / total;
+      const rowTotal = rowWeights[rowIndex] || 1;
+      row.forEach((room) => {
+        const roomWidth = width * room.targetArea / rowTotal;
+        const ratio = Math.max(roomWidth / Math.max(height, 0.1), height / Math.max(roomWidth, 0.1));
+        score += Math.max(0, ratio - 1.8) * 12;
+        if (roomWidth < 1.8 || height < 1.8) score += 100;
+      });
+    });
+    if (score < bestScore) { bestScore = score; bestColumns = columns; }
+  }
+  return bestColumns;
+}
+
+function doorFacingCirculation(row: number, rowCount: number, column: number, columnCount: number): 'top' | 'bottom' | 'left' | 'right' {
+  if (rowCount > 1) return row === 0 ? 'bottom' : 'top';
+  return column === 0 ? 'right' : column === columnCount - 1 ? 'left' : 'bottom';
+}
+
+function exteriorWindowSide(row: number, rowCount: number, column: number, columnCount: number, doorSide: string): 'top' | 'bottom' | 'left' | 'right' {
+  const candidates: Array<'top' | 'bottom' | 'left' | 'right'> = [];
+  if (row === 0) candidates.push('top');
+  if (row === rowCount - 1) candidates.push('bottom');
+  if (column === 0) candidates.push('left');
+  if (column === columnCount - 1) candidates.push('right');
+  return candidates.find((side) => side !== doorSide) || (doorSide === 'top' ? 'bottom' : 'top');
+}
+
+function hasPracticalDimensions(room: any): boolean {
+  const minSide = String(room.type).toLowerCase().includes('bath') ? 1.5 : 2.1;
+  return room.width >= minSide && room.height >= minSide;
+}
+
+function roundPlan(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function generateLegacyAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[]) {
   const rooms: any[] = [];
   const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
 

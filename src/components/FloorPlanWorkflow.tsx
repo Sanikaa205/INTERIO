@@ -11,6 +11,7 @@ import {
   Info,
   ArrowLeft,
   Home,
+  Download,
 } from 'lucide-react';
 import { FloorPlanResult, FloorPlanRoom } from '../types';
 import { generateFloorPlanApi } from '../services/api';
@@ -36,6 +37,7 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
   // Plot Dimensions (Meters)
   const [plotWidth, setPlotWidth] = useState<number>(15);
   const [plotLength, setPlotLength] = useState<number>(20);
+  const [userRequirements, setUserRequirements] = useState<string>('');
 
   // Dynamic Room List Input
   const [rooms, setRooms] = useState<RoomInput[]>([
@@ -195,6 +197,7 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
       const generated = await generateFloorPlanApi({
         plotWidth,
         plotLength,
+        userRequirements,
         rooms: rooms.map((r) => ({
           name: r.name,
           type: r.type,
@@ -247,6 +250,15 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
   const handleResetLayout = () => {
     if (!originalRooms) return;
     setResult((prev) => (prev ? { ...prev, rooms: originalRooms.map((r) => ({ ...r })) } : prev));
+  };
+
+  // The interactive canvas intentionally stays lightweight.  Exporting uses a
+  // separate, print-ready SVG so the downloaded image always has architectural
+  // line weights, opening symbols, labels and dimensions (regardless of the
+  // current selection or grid setting in the editor).
+  const handleDownloadFloorPlan = () => {
+    if (!result) return;
+    downloadFloorPlanPng(result);
   };
 
   // Drag-to-reposition: pointer events + native SVG coordinate conversion so
@@ -451,6 +463,21 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                 </button>
               </div>
 
+              <div className="border-t border-stone-100 pt-5 space-y-2">
+                <label htmlFor="input-floorplan-requirements" className="block text-xs font-medium text-stone-700">
+                  User requirements
+                </label>
+                <textarea
+                  id="input-floorplan-requirements"
+                  value={userRequirements}
+                  onChange={(e) => setUserRequirements(e.target.value)}
+                  placeholder="For example: entry from the south, kitchen near living room, privacy for bedrooms, utility access..."
+                  rows={3}
+                  maxLength={1000}
+                  className="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs text-stone-800 focus:border-stone-900 outline-hidden transition-colors resize-y"
+                />
+              </div>
+
               <div className="space-y-2.5 max-h-[320px] overflow-y-auto pr-1">
                 {rooms.map((room) => (
                   <div
@@ -613,6 +640,17 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
 
                     <button
                       type="button"
+                      id="btn-download-floorplan-png"
+                      onClick={handleDownloadFloorPlan}
+                      title="Download a clean architectural PNG for floor-plan upload"
+                      className="px-2.5 py-1 rounded-md bg-white border border-stone-200 hover:bg-stone-50 text-stone-800 text-xs font-medium transition-colors flex items-center gap-1"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Download PNG</span>
+                    </button>
+
+                    <button
+                      type="button"
                       id="btn-open-floorplan-3d"
                       onClick={() => onView3D(result)}
                       className="px-3 py-1 rounded-md bg-stone-900 hover:bg-stone-800 text-white text-xs font-medium transition-colors flex items-center gap-1"
@@ -658,6 +696,29 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                         fill="url(#cad-grid)"
                       />
                     )}
+
+                    {result.circulation?.map((space, index) => (
+                      <g key={`circulation-${index}`} pointerEvents="none">
+                        <rect
+                          x={space.x}
+                          y={space.y}
+                          width={space.width}
+                          height={space.height}
+                          fill="#f8fafc"
+                          stroke="#94a3b8"
+                          strokeWidth="0.06"
+                          strokeDasharray="0.16,0.1"
+                        />
+                        <text
+                          x={space.x + space.width / 2}
+                          y={space.y + space.height / 2}
+                          textAnchor="middle"
+                          className="text-[0.3px] font-medium fill-slate-500"
+                        >
+                          {space.name}
+                        </text>
+                      </g>
+                    ))}
 
                     {/* Outer Boundary Wall */}
                     <rect
@@ -729,6 +790,22 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                           )}
 
                           {renderDoorSwing(room)}
+                          {renderWindowSymbol(room)}
+                          {room.furniture?.map((item) => (
+                            <rect
+                              key={item.id}
+                              x={item.x}
+                              y={item.y}
+                              width={item.width}
+                              height={item.height}
+                              fill="#d6d3d1"
+                              fillOpacity="0.65"
+                              stroke="#57534e"
+                              strokeWidth="0.05"
+                              transform={item.rotation ? `rotate(${item.rotation}, ${item.x + item.width / 2}, ${item.y + item.height / 2})` : undefined}
+                              pointerEvents="none"
+                            />
+                          ))}
 
                           <g className="pointer-events-none select-none">
                             <text
@@ -777,6 +854,14 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                   </span>
                   <span className="text-xs font-semibold text-stone-900">
                     {result.totalBuiltArea} m²
+                  </span>
+                </div>
+                <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-100">
+                  <span className="text-[10px] text-stone-400 block">
+                    Plot Area
+                  </span>
+                  <span className="text-xs font-semibold text-stone-900">
+                    {result.plotArea ?? (result.plotWidth * result.plotLength).toFixed(1)} m²
                   </span>
                 </div>
                 <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-100">
@@ -902,7 +987,7 @@ function computeSpaceUtilization(result: FloorPlanResult): number {
 
 // Helper: Render architectural door swing arc on SVG
 function renderDoorSwing(room: FloorPlanRoom) {
-  const doorW = 0.8;
+  const doorW = Math.min(0.9, room.doorSide === 'left' || room.doorSide === 'right' ? room.height * 0.55 : room.width * 0.55);
   const side = room.doorSide || 'bottom';
 
   if (side === 'bottom') {
@@ -922,6 +1007,183 @@ function renderDoorSwing(room: FloorPlanRoom) {
       </g>
     );
   }
+  if (side === 'top') {
+    const startX = room.x + (room.width - doorW) / 2;
+    const startY = room.y;
+    return <g><line x1={startX} y1={startY} x2={startX + doorW} y2={startY} stroke="#fff" strokeWidth="0.2" /><line x1={startX} y1={startY} x2={startX + doorW} y2={startY + doorW} stroke="#b45309" strokeWidth="0.05" /><path d={`M ${startX} ${startY + doorW} A ${doorW} ${doorW} 0 0 1 ${startX + doorW} ${startY}`} fill="none" stroke="#b45309" strokeWidth="0.04" strokeDasharray="0.08,0.04" /></g>;
+  }
+  if (side === 'left') {
+    const startX = room.x;
+    const startY = room.y + (room.height - doorW) / 2;
+    return <g><line x1={startX} y1={startY} x2={startX} y2={startY + doorW} stroke="#fff" strokeWidth="0.2" /><line x1={startX} y1={startY} x2={startX + doorW} y2={startY + doorW} stroke="#b45309" strokeWidth="0.05" /><path d={`M ${startX + doorW} ${startY} A ${doorW} ${doorW} 0 0 0 ${startX} ${startY + doorW}`} fill="none" stroke="#b45309" strokeWidth="0.04" strokeDasharray="0.08,0.04" /></g>;
+  }
+  const startX = room.x + room.width;
+  const startY = room.y + (room.height - doorW) / 2;
+  return <g><line x1={startX} y1={startY} x2={startX} y2={startY + doorW} stroke="#fff" strokeWidth="0.2" /><line x1={startX} y1={startY} x2={startX - doorW} y2={startY + doorW} stroke="#b45309" strokeWidth="0.05" /><path d={`M ${startX - doorW} ${startY} A ${doorW} ${doorW} 0 0 1 ${startX} ${startY + doorW}`} fill="none" stroke="#b45309" strokeWidth="0.04" strokeDasharray="0.08,0.04" /></g>;
+}
 
-  return null;
+function renderWindowSymbol(room: FloorPlanRoom) {
+  const side = room.windowSide;
+  if (!side) return null;
+  const opening = Math.min(1.2, side === 'top' || side === 'bottom' ? room.width * 0.6 : room.height * 0.6);
+  if (side === 'top' || side === 'bottom') {
+    const x = room.x + (room.width - opening) / 2;
+    const y = side === 'top' ? room.y : room.y + room.height;
+    return <g><line x1={x} y1={y} x2={x + opening} y2={y} stroke="#fff" strokeWidth="0.2" /><line x1={x} y1={y - 0.05} x2={x + opening} y2={y - 0.05} stroke="#0284c7" strokeWidth="0.04" /><line x1={x} y1={y + 0.05} x2={x + opening} y2={y + 0.05} stroke="#0284c7" strokeWidth="0.04" /></g>;
+  }
+  const x = side === 'left' ? room.x : room.x + room.width;
+  const y = room.y + (room.height - opening) / 2;
+  return <g><line x1={x} y1={y} x2={x} y2={y + opening} stroke="#fff" strokeWidth="0.2" /><line x1={x - 0.05} y1={y} x2={x - 0.05} y2={y + opening} stroke="#0284c7" strokeWidth="0.04" /><line x1={x + 0.05} y1={y} x2={x + 0.05} y2={y + opening} stroke="#0284c7" strokeWidth="0.04" /></g>;
+}
+
+type OpeningSide = 'top' | 'bottom' | 'left' | 'right';
+
+/**
+ * Renders the generated geometry as a conventional black-and-white plan.
+ * This is deliberately independent of the interactive SVG: selections,
+ * drag affordances and coloured room fills never leak into a file intended
+ * for an image-based floor-plan processor.
+ */
+function createArchitecturalPlanSvg(result: FloorPlanResult): string {
+  const pxPerMeter = Math.max(42, Math.min(72, 1800 / Math.max(result.plotWidth, result.plotLength)));
+  const margin = 118;
+  const planW = Math.round(result.plotWidth * pxPerMeter);
+  const planH = Math.round(result.plotLength * pxPerMeter);
+  const canvasW = planW + margin * 2;
+  const canvasH = planH + margin * 2 + 62;
+  const p = (value: number) => Number((value * pxPerMeter).toFixed(1));
+  const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char] || char));
+  const title = `${result.plotWidth}m × ${result.plotLength}m FLOOR PLAN`;
+  const plotArea = result.plotArea ?? Math.round(result.plotWidth * result.plotLength * 10) / 10;
+
+  const line = (x1: number, y1: number, x2: number, y2: number, width = 3) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#111827" stroke-width="${width}" stroke-linecap="square"/>`;
+
+  const door = (room: FloorPlanRoom) => {
+    const side = (room.doorSide || 'bottom') as OpeningSide;
+    const width = Math.min(p(0.9), side === 'top' || side === 'bottom' ? p(room.width) * 0.62 : p(room.height) * 0.62);
+    const x = margin + p(room.x);
+    const y = margin + p(room.y);
+    const w = p(room.width);
+    const h = p(room.height);
+    const gapStroke = 8;
+    if (side === 'top' || side === 'bottom') {
+      const start = x + Math.max(p(0.18), (w - width) / 2);
+      const edgeY = side === 'top' ? y : y + h;
+      const inward = side === 'top' ? 1 : -1;
+      return `<line x1="${start}" y1="${edgeY}" x2="${start + width}" y2="${edgeY}" stroke="#fff" stroke-width="${gapStroke}"/>
+        <line x1="${start}" y1="${edgeY}" x2="${start + width}" y2="${edgeY + inward * width}" stroke="#111827" stroke-width="2.5"/>
+        <path d="M ${start} ${edgeY + inward * width} A ${width} ${width} 0 0 ${inward > 0 ? 1 : 0} ${start + width} ${edgeY}" fill="none" stroke="#4b5563" stroke-width="1.6"/>`;
+    }
+    const start = y + Math.max(p(0.18), (h - width) / 2);
+    const edgeX = side === 'left' ? x : x + w;
+    const inward = side === 'left' ? 1 : -1;
+    return `<line x1="${edgeX}" y1="${start}" x2="${edgeX}" y2="${start + width}" stroke="#fff" stroke-width="${gapStroke}"/>
+      <line x1="${edgeX}" y1="${start}" x2="${edgeX + inward * width}" y2="${start + width}" stroke="#111827" stroke-width="2.5"/>
+      <path d="M ${edgeX + inward * width} ${start} A ${width} ${width} 0 0 ${inward > 0 ? 0 : 1} ${edgeX} ${start + width}" fill="none" stroke="#4b5563" stroke-width="1.6"/>`;
+  };
+
+  const windowSymbol = (room: FloorPlanRoom) => {
+    if (!room.windowSide) return '';
+    const side = room.windowSide as OpeningSide;
+    const x = margin + p(room.x);
+    const y = margin + p(room.y);
+    const w = p(room.width);
+    const h = p(room.height);
+    const opening = Math.min(p(1.2), side === 'top' || side === 'bottom' ? w * 0.62 : h * 0.62);
+    if (side === 'top' || side === 'bottom') {
+      const start = x + (w - opening) / 2;
+      const edgeY = side === 'top' ? y : y + h;
+      return `<line x1="${start}" y1="${edgeY}" x2="${start + opening}" y2="${edgeY}" stroke="#fff" stroke-width="8"/>
+        <line x1="${start}" y1="${edgeY - 3}" x2="${start + opening}" y2="${edgeY - 3}" stroke="#0284c7" stroke-width="3"/>
+        <line x1="${start}" y1="${edgeY + 3}" x2="${start + opening}" y2="${edgeY + 3}" stroke="#0284c7" stroke-width="3"/>`;
+    }
+    const start = y + (h - opening) / 2;
+    const edgeX = side === 'left' ? x : x + w;
+    return `<line x1="${edgeX}" y1="${start}" x2="${edgeX}" y2="${start + opening}" stroke="#fff" stroke-width="8"/>
+      <line x1="${edgeX - 3}" y1="${start}" x2="${edgeX - 3}" y2="${start + opening}" stroke="#0284c7" stroke-width="3"/>
+      <line x1="${edgeX + 3}" y1="${start}" x2="${edgeX + 3}" y2="${start + opening}" stroke="#0284c7" stroke-width="3"/>`;
+  };
+
+  const furniture = result.rooms.flatMap((room) => room.furniture || []).map((item) => {
+    const x = margin + p(item.x);
+    const y = margin + p(item.y);
+    const w = p(item.width);
+    const h = p(item.height);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    return `<g transform="rotate(${item.rotation || 0} ${cx} ${cy})">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="2" fill="#e7e5e4" stroke="#57534e" stroke-width="1.5"/>
+      <text x="${cx}" y="${cy + 3}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(8, Math.min(12, Math.min(w, h) / 4))}" fill="#57534e">${esc(item.name)}</text>
+    </g>`;
+  }).join('');
+
+  const circulation = (result.circulation || []).map((space) => {
+    const x = margin + p(space.x);
+    const y = margin + p(space.y);
+    const w = p(space.width);
+    const h = p(space.height);
+    return `<g>
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" fill="#64748b">${esc(space.name)}</text>
+    </g>`;
+  }).join('');
+
+  const rooms = result.rooms.map((room) => {
+    const x = margin + p(room.x);
+    const y = margin + p(room.y);
+    const w = p(room.width);
+    const h = p(room.height);
+    const nameSize = Math.max(13, Math.min(21, Math.min(w, h) / 5));
+    const detailsSize = Math.max(10, nameSize * 0.68);
+    const area = room.area ?? Math.round(room.width * room.height * 10) / 10;
+    return `<g>
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#ffffff" stroke="#111827" stroke-width="5"/>
+      ${door(room)}${windowSymbol(room)}
+      <text x="${x + w / 2}" y="${y + h / 2 - detailsSize * 0.25}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${nameSize}" font-weight="700" fill="#111827">${esc(room.name)}</text>
+      <text x="${x + w / 2}" y="${y + h / 2 + detailsSize * 1.2}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${detailsSize}" fill="#374151">${room.width} m × ${room.height} m  |  ${area} m²</text>
+    </g>`;
+  }).join('');
+
+  const dimY = margin - 43;
+  const dimX = margin - 43;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
+    <rect width="100%" height="100%" fill="#ffffff"/>
+    <text x="${canvasW / 2}" y="34" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#111827">${title}</text>
+    <text x="${canvasW / 2}" y="55" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#4b5563">ARCHITECTURAL PLAN • PLOT AREA ${plotArea} m² • DIMENSIONS IN METERS</text>
+    ${line(margin, dimY, margin + planW, dimY, 1.5)}${line(margin, dimY - 7, margin, dimY + 7, 1.5)}${line(margin + planW, dimY - 7, margin + planW, dimY + 7, 1.5)}
+    <text x="${margin + planW / 2}" y="${dimY - 9}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#111827">${result.plotWidth} m</text>
+    ${line(dimX, margin, dimX, margin + planH, 1.5)}${line(dimX - 7, margin, dimX + 7, margin, 1.5)}${line(dimX - 7, margin + planH, dimX + 7, margin + planH, 1.5)}
+    <text x="${dimX - 10}" y="${margin + planH / 2}" text-anchor="middle" transform="rotate(-90 ${dimX - 10} ${margin + planH / 2})" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#111827">${result.plotLength} m</text>
+    <rect x="${margin}" y="${margin}" width="${planW}" height="${planH}" fill="none" stroke="#111827" stroke-width="9"/>
+    ${circulation}
+    ${rooms}
+    ${furniture}
+    <g transform="translate(${canvasW - 98}, ${canvasH - 75})" font-family="Arial, Helvetica, sans-serif" fill="#111827"><path d="M 18 0 L 30 32 L 18 25 L 6 32 Z" fill="#111827"/><text x="18" y="49" text-anchor="middle" font-size="12" font-weight="700">N</text><text x="18" y="65" text-anchor="middle" font-size="9">NORTH</text></g>
+  </svg>`;
+}
+
+function downloadFloorPlanPng(result: FloorPlanResult) {
+  const svg = createArchitecturalPlanSvg(result);
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = () => {
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width * scale;
+    canvas.height = image.height * scale;
+    const context = canvas.getContext('2d');
+    if (!context) return URL.revokeObjectURL(url);
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    const link = document.createElement('a');
+    link.download = `INTERIO_${result.plotWidth}x${result.plotLength}_architectural_floor_plan.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+  image.onerror = () => URL.revokeObjectURL(url);
+  image.src = url;
 }

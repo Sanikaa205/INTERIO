@@ -184,6 +184,7 @@ export const deleteProjectApi = deleteProject;
 export async function generateFloorPlanApi(params: {
   plotWidth: number;
   plotLength: number;
+  userRequirements?: string;
   rooms: { name: string; type: string; minSize: number }[];
 }): Promise<FloorPlanResult> {
   const res = await fetchWithTimeout(`${API_BASE}/gemini/floorplan`, {

@@ -49,14 +49,55 @@ export interface FloorPlanRoom {
   color?: string;
   adjacentTo?: string[];
   area?: number;
+  walls?: FloorPlanWall[];
+  doors?: FloorPlanDoor[];
+  windows?: FloorPlanWindow[];
+  furniture?: FloorPlanFurniture[];
+}
+
+export interface FloorPlanWall {
+  side: 'top' | 'bottom' | 'left' | 'right';
+  thickness?: number;
+}
+
+export interface FloorPlanDoor {
+  side: 'top' | 'bottom' | 'left' | 'right';
+  offset?: number;
+  width?: number;
+  swing?: 'in' | 'out' | 'left' | 'right';
+}
+
+export interface FloorPlanWindow {
+  side: 'top' | 'bottom' | 'left' | 'right';
+  offset?: number;
+  width?: number;
+}
+
+export interface FloorPlanFurniture {
+  id: string;
+  name: string;
+  category: 'furniture' | 'fixture' | 'sanitary';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
 }
 
 export interface FloorPlanResult {
   plotWidth: number; // meters
   plotLength: number; // meters
+  plotArea?: number; // square meters
   rooms: FloorPlanRoom[];
   totalBuiltArea: number;
   openSpaceArea?: number;
+  circulation?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    name: string;
+  }[];
   architecturalStyle?: string;
   designNotes?: string;
 }
