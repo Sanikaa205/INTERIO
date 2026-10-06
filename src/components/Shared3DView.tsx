@@ -66,6 +66,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   const [showGrid, setShowGrid] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [wallHeight, setWallHeight] = useState(2.8); // meters
+  const [shellView, setShellView] = useState<'interior' | 'full'>('interior');
   const [exportedToast, setExportedToast] = useState(false);
 
   // Manual Orbit controls tracking
@@ -74,6 +75,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   const pointerDownPosition = useRef({ x: 0, y: 0 });
   const cameraAngles = useRef({ theta: Math.PI / 4, phi: Math.PI / 3, radius: 18 });
   const targetLookAt = useRef(new THREE.Vector3(0, 0, 0));
+  const shellWallMaterialsRef = useRef<Array<{ normal: THREE.Vector3; material: THREE.MeshStandardMaterial }>>([]);
 
   // Furniture selection & transform editing (click-to-select + drag/rotate)
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
@@ -241,7 +243,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       }
       renderer.dispose();
     };
-  }, [data, projectType, wallHeight, lightingMode, showWireframe, showGrid]);
+  }, [data, projectType, wallHeight, lightingMode, showWireframe, showGrid, shellView]);
 
   // Re-sync the gizmo when selection changes without a full scene rebuild
   // (e.g. the user picked a different item in the 2D preview before
@@ -290,6 +292,23 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       camera.position.set(x, Math.max(y, 1.0), z);
       camera.lookAt(target);
     }
+    updateCameraFacingWallOpacity();
+  };
+
+  // In interior mode, only the wall facing the current camera fades. This
+  // keeps free Orbit inspectable from every side without compromising the
+  // complete shell shown in Full Shell mode.
+  const updateCameraFacingWallOpacity = () => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    const direction = camera.position.clone().sub(targetLookAt.current).setY(0).normalize();
+    shellWallMaterialsRef.current.forEach(({ normal, material }) => {
+      const facingCamera = normal.dot(direction) > 0.62;
+      material.transparent = shellView === 'interior' && facingCamera;
+      material.opacity = shellView === 'interior' && facingCamera ? 0.12 : 1;
+      material.depthWrite = !(shellView === 'interior' && facingCamera);
+      material.needsUpdate = true;
+    });
   };
 
   // Setup Lights
@@ -339,6 +358,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
   // Build 3D geometry
   const build3DScene = (scene: THREE.Scene) => {
+    shellWallMaterialsRef.current = [];
     // Center point of room
     const centerX = roomW / 2;
     const centerZ = roomL / 2;
@@ -428,7 +448,8 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       floorMesh.receiveShadow = true;
       scene.add(floorMesh);
 
-      // Room Perimeter Walls with decorative baseboard
+      // Room perimeter shell.  Wall sections are laid out from the measured
+      // room edges, rather than decorative caps or detached approximations.
       const wallColor = interiorData.colorPalette?.find((swatch) => swatch.role === 'wall')?.hex || '#eee9df';
       const wallMat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(wallColor),
@@ -440,24 +461,28 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       if (polygonCorners) {
         // Walls follow the actual clicked quadrilateral (corners in order
         // 0=bottom-left, 1=bottom-right, 2=top-right, 3=top-left in the
-        // source photo). The 0->1 edge is the side nearest the camera in
-        // the photo, so it's left open here too, matching the rectangular
-        // room's convention of leaving the front wall out for visibility.
+        // source photo). Unlike the former open-shell preview, all four
+        // edges are present so the reconstruction remains a real enclosure.
+        createWallSegmentBetween(scene, polygonCorners[0], polygonCorners[1], wallThick, wallHeight, wallMat);
         createWallSegmentBetween(scene, polygonCorners[1], polygonCorners[2], wallThick, wallHeight, wallMat);
         createWallSegmentBetween(scene, polygonCorners[2], polygonCorners[3], wallThick, wallHeight, wallMat);
         createWallSegmentBetween(scene, polygonCorners[3], polygonCorners[0], wallThick, wallHeight, wallMat);
       } else {
-        // Back wall has a real window opening; the front wall and ceiling stay open for inspection.
+        // North wall: four tightly aligned structural sections around a real
+        // window opening. East/south walls are continuous. West is split
+        // exactly at the door aperture, so no pieces float beyond a corner.
         const windowW = Math.min(1.7, roomW * 0.42);
         const windowBottom = 0.88;
         const windowTop = Math.min(2.15, wallHeight - 0.25);
         const windowH = windowTop - windowBottom;
         const sideW = (roomW - windowW) / 2;
         const northZ = -roomL / 2;
-        createWallSegment(scene, sideW, wallThick, wallHeight, -(windowW + sideW) / 2, wallHeight / 2, northZ, wallMat);
-        createWallSegment(scene, sideW, wallThick, wallHeight, (windowW + sideW) / 2, wallHeight / 2, northZ, wallMat);
-        createWallSegment(scene, windowW, wallThick, windowBottom, 0, windowBottom / 2, northZ, wallMat);
-        createWallSegment(scene, windowW, wallThick, Math.max(0.1, wallHeight - windowTop), 0, windowTop + Math.max(0.1, wallHeight - windowTop) / 2, northZ, wallMat);
+        const northMat = wallMat.clone();
+        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(0, 0, -1), material: northMat });
+        createWallSegment(scene, sideW, wallThick, wallHeight, -(windowW + sideW) / 2, wallHeight / 2, northZ, northMat);
+        createWallSegment(scene, sideW, wallThick, wallHeight, (windowW + sideW) / 2, wallHeight / 2, northZ, northMat);
+        createWallSegment(scene, windowW, wallThick, windowBottom, 0, windowBottom / 2, northZ, northMat);
+        createWallSegment(scene, windowW, wallThick, Math.max(0.1, wallHeight - windowTop), 0, windowTop + Math.max(0.1, wallHeight - windowTop) / 2, northZ, northMat);
         const outdoorGlow = new THREE.Mesh(
           new THREE.BoxGeometry(windowW - 0.1, windowH - 0.1, 0.025),
           new THREE.MeshStandardMaterial({ color: '#bacbc9', emissive: '#71827b', emissiveIntensity: 0.16, roughness: 0.88 })
@@ -472,15 +497,22 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         const frameDepth = 0.07;
         for (const x of [-windowW / 2, 0, windowW / 2]) createWallSegment(scene, 0.055, frameDepth, windowH + 0.06, x, windowBottom + windowH / 2, northZ + 0.08, frameMat);
         for (const y of [windowBottom, windowTop]) createWallSegment(scene, windowW + 0.06, frameDepth, 0.055, 0, y, northZ + 0.08, frameMat);
-        // Door aperture and a slightly ajar slab in the west wall.
+        // Door aperture and an ajar slab in the west wall.
         const doorW = Math.min(0.92, roomL * 0.22);
         const doorH = Math.min(2.15, wallHeight - 0.2);
-        const doorZ = roomL * 0.22;
+        const doorZ = Math.min(roomL / 2 - doorW / 2 - 0.32, 0.85);
         const westX = -roomW / 2;
-        const westSegment = (roomL - doorW) / 2;
-        createWallSegment(scene, wallThick, westSegment, wallHeight, westX, wallHeight / 2, -doorZ - doorW / 2 - westSegment / 2, wallMat);
-        createWallSegment(scene, wallThick, westSegment, wallHeight, westX, wallHeight / 2, doorZ + doorW / 2 + westSegment / 2, wallMat);
-        createWallSegment(scene, wallThick, doorW, wallHeight - doorH, westX, doorH + (wallHeight - doorH) / 2, doorZ, wallMat);
+        const minZ = -roomL / 2;
+        const maxZ = roomL / 2;
+        const doorStart = doorZ - doorW / 2;
+        const doorEnd = doorZ + doorW / 2;
+        const westBefore = doorStart - minZ;
+        const westAfter = maxZ - doorEnd;
+        const westMat = wallMat.clone();
+        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(-1, 0, 0), material: westMat });
+        createWallSegment(scene, wallThick, westBefore, wallHeight, westX, wallHeight / 2, minZ + westBefore / 2, westMat);
+        createWallSegment(scene, wallThick, westAfter, wallHeight, westX, wallHeight / 2, doorEnd + westAfter / 2, westMat);
+        createWallSegment(scene, wallThick, doorW, wallHeight - doorH, westX, doorH + (wallHeight - doorH) / 2, doorZ, westMat);
         const doorGroup = new THREE.Group();
         const doorMat = new THREE.MeshStandardMaterial({ color: interiorData.colorPalette?.find((swatch) => swatch.role === 'secondary')?.hex || '#a7835e', roughness: 0.62 });
         const door = new THREE.Mesh(new THREE.BoxGeometry(0.055, doorH - 0.03, doorW - 0.04), doorMat);
@@ -489,23 +521,33 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         doorGroup.position.set(westX + 0.08, 0, doorZ - doorW / 2);
         doorGroup.rotation.y = -0.22;
         scene.add(doorGroup);
+        // Door jambs and lintel share the same aperture measurements as the
+        // surrounding wall sections, keeping frame and opening aligned.
+        const doorFrameMat = new THREE.MeshStandardMaterial({ color: '#f2eee6', roughness: 0.58 });
+        createWallSegment(scene, 0.07, 0.07, doorH, westX + 0.12, doorH / 2, doorStart, doorFrameMat);
+        createWallSegment(scene, 0.07, 0.07, doorH, westX + 0.12, doorH / 2, doorEnd, doorFrameMat);
+        createWallSegment(scene, 0.07, doorW + 0.08, 0.07, westX + 0.12, doorH, doorZ, doorFrameMat);
         const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshStandardMaterial({ color: '#a88750', metalness: 0.75, roughness: 0.24 }));
         knob.position.set(westX + 0.12, 0.92, doorZ + 0.2);
         scene.add(knob);
-        // Painted skirting and a narrow oak cap detail around the open room shell.
+        // Baseboards follow actual connected wall runs. There are deliberately
+        // no top caps: they caused the former floating, detached geometry.
         const trim = new THREE.MeshStandardMaterial({ color: '#f5f0e7', roughness: 0.72 });
         const baseH = 0.12;
         const baseZ = northZ + wallThick / 2 + 0.015;
         createWallSegment(scene, roomW, 0.035, baseH, 0, baseH / 2, baseZ, trim);
         const sideBase = (length: number, z: number) => createWallSegment(scene, 0.035, length, baseH, westX + wallThick / 2 + 0.015, baseH / 2, z, trim);
-        sideBase(westSegment, -doorZ - doorW / 2 - westSegment / 2);
-        sideBase(westSegment, doorZ + doorW / 2 + westSegment / 2);
+        sideBase(westBefore, minZ + westBefore / 2);
+        sideBase(westAfter, doorEnd + westAfter / 2);
         createWallSegment(scene, 0.035, roomL, baseH, roomW / 2 - wallThick / 2 - 0.015, baseH / 2, 0, trim);
-        const caps = new THREE.MeshStandardMaterial({ color: '#d5c1a1', roughness: 0.55 });
-        createWallSegment(scene, roomW, wallThick + 0.04, 0.045, 0, wallHeight - 0.02, northZ, caps);
-        createWallSegment(scene, wallThick + 0.04, roomL, 0.045, roomW / 2, wallHeight - 0.02, 0, caps);
-        createWallSegment(scene, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, -doorZ - doorW / 2 - westSegment / 2, caps);
-        createWallSegment(scene, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, doorZ + doorW / 2 + westSegment / 2, caps);
+        const eastWallMat = wallMat.clone();
+        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(1, 0, 0), material: eastWallMat });
+        createWallSegment(scene, wallThick, roomL, wallHeight, roomW / 2, wallHeight / 2, 0, eastWallMat);
+        const southWallMat = wallMat.clone();
+        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(0, 0, 1), material: southWallMat });
+        createWallSegment(scene, roomW, wallThick, wallHeight, 0, wallHeight / 2, roomL / 2, southWallMat);
+        createWallSegment(scene, roomW, 0.035, baseH, 0, baseH / 2, roomL / 2 - wallThick / 2 - 0.015, trim);
+        updateCameraFacingWallOpacity();
       }
 
       if (!polygonCorners) addStyledDecor(
@@ -1208,6 +1250,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
+
+          {interiorData && (
+            <button
+              id="btn-3d-shell-view"
+              onClick={() => setShellView(shellView === 'interior' ? 'full' : 'interior')}
+              title={shellView === 'interior' ? 'Show complete room shell' : 'Fade camera-side wall for interior inspection'}
+              className="px-2.5 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-300 border border-stone-800 backdrop-blur-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{shellView === 'interior' ? 'Full Shell' : 'Interior'}</span>
+            </button>
+          )}
         </div>
       </div>
 
