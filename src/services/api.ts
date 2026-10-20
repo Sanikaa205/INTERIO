@@ -7,6 +7,7 @@ import {
 } from '../types';
 
 const API_BASE = '/api';
+const shouldLogQwenDebug = typeof window !== 'undefined' && window.location.hostname === 'localhost';
 
 function getAuthHeader(): Record<string, string> {
   const token = localStorage.getItem('interio_token');
@@ -240,4 +241,28 @@ export async function reconstructRoomApi(params: {
     throw new Error(err.error || 'Failed to analyze the room photo. Please try again.');
   }
   return res.json();
+}
+
+export async function generateRoomRenovationApi(params: {
+  imageBase64: string;
+  renovationPrompt: string;
+}): Promise<{ renovatedImageUrl: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/qwen/renovate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  }, 300000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Qwen could not generate a renovated room image.' }));
+    throw new Error(err.error || 'Qwen could not generate a renovated room image.');
+  }
+  const data = await res.json();
+  if (!data.renovatedImageUrl || typeof data.renovatedImageUrl !== 'string') {
+    throw new Error('Qwen returned an invalid renovated image URL.');
+  }
+  if (shouldLogQwenDebug) {
+    console.log('[QWEN FRONTEND RESPONSE]', data);
+    console.log('[QWEN GENERATED IMAGE URL]', data.renovatedImageUrl);
+  }
+  return data;
 }

@@ -6,6 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { Client, handle_file } from '@gradio/client';
 import { optimizeFurnitureLayout, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
 import { matchFurnitureAsset } from './src/services/furnitureAssets';
 
@@ -1246,6 +1247,112 @@ function generateLegacyAlgorithmicFloorPlan(plotW: number, plotL: number, reques
 // ----------------------------------------------------
 // GEMINI WORKFLOW 3: EXISTING HOUSE RECONSTRUCTION
 // ----------------------------------------------------
+async function roomImageToBuffer(imageSource: string): Promise<Buffer> {
+  if (imageSource.startsWith('data:image/')) {
+    const commaIndex = imageSource.indexOf(',');
+    if (commaIndex === -1) throw new Error('The uploaded room image could not be read.');
+    return Buffer.from(imageSource.slice(commaIndex + 1), 'base64');
+  }
+
+  const response = await fetch(imageSource, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error('The selected room image could not be downloaded for renovation.');
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function generateQwenRenovation(imageSource: string, userRenovationPrompt: string) {
+  const originalRoomImageBuffer = await roomImageToBuffer(imageSource);
+  const qwen = await Client.connect('Qwen/Qwen-Image-2.1');
+  const prediction = qwen.predict('/prepare_request', {
+    input_images: [{ image: handle_file(originalRoomImageBuffer) }],
+    original_prompt: [
+      'Use image 1 as the original room.',
+      'Renovate it according to this user request:',
+      userRenovationPrompt,
+      'Preserve the existing room geometry and camera viewpoint.',
+      'Keep walls, doors, windows, floor boundaries, ceiling boundaries,',
+      'openings, and overall room proportions in their original locations.',
+    ].join(' '),
+    enable_extend: false,
+    custom_size: false,
+    quality: 'quality',
+    seed: 0,
+    randomize_seed: true,
+  });
+  const result = await Promise.race([
+    prediction,
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error('Qwen did not complete within four minutes. Please try again.')),
+      240_000,
+    )),
+  ]);
+
+  const generatedImage = result.data?.[0] as { url?: string; path?: string } | string | undefined;
+  const imageUrl = typeof generatedImage === 'string'
+    ? generatedImage
+    : generatedImage?.url || generatedImage?.path;
+  if (!imageUrl) throw new Error('Qwen did not return a renovated room image.');
+
+  // Gradio normally returns `url`, but some runs return only a path. Convert a
+  // Space-relative file path into the public Gradio file URL for the browser.
+  return /^https?:\/\//.test(imageUrl)
+    ? imageUrl
+    : `https://qwen-qwen-image-2-1.hf.space/gradio_api/file=${encodeURIComponent(imageUrl)}`;
+}
+
+function qwenImageProxyUrl(remoteImageUrl: string) {
+  return `/api/qwen/image?url=${encodeURIComponent(remoteImageUrl)}`;
+}
+
+app.get('/api/qwen/image', async (req, res) => {
+  const requestedUrl = typeof req.query.url === 'string' ? req.query.url : '';
+  let remoteUrl: URL;
+  try {
+    remoteUrl = new URL(requestedUrl);
+  } catch {
+    return res.status(400).json({ error: 'Invalid Qwen image URL.' });
+  }
+
+  // This is intentionally allowlisted instead of acting as a general proxy.
+  if (remoteUrl.protocol !== 'https:' || remoteUrl.hostname !== 'qwen-qwen-image-2-1.hf.space') {
+    return res.status(400).json({ error: 'Unexpected Qwen image host.' });
+  }
+
+  try {
+    const imageResponse = await fetch(remoteUrl, { signal: AbortSignal.timeout(60_000) });
+    const contentType = imageResponse.headers.get('content-type') || '';
+    if (!imageResponse.ok || !contentType.startsWith('image/')) {
+      throw new Error(`Qwen image download returned ${imageResponse.status} (${contentType || 'unknown content type'}).`);
+    }
+    const image = Buffer.from(await imageResponse.arrayBuffer());
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.send(image);
+  } catch (proxyErr: any) {
+    console.error('[INTERIO Qwen] Generated image proxy failed:', proxyErr?.message || proxyErr);
+    return res.status(502).json({ error: 'The generated Qwen image could not be downloaded.' });
+  }
+});
+
+app.post('/api/qwen/renovate', async (req, res) => {
+  try {
+    const { imageBase64, renovationPrompt } = req.body;
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ error: 'A room photo is required to generate a renovation.' });
+    }
+    if (!renovationPrompt || typeof renovationPrompt !== 'string' || !renovationPrompt.trim()) {
+      return res.status(400).json({ error: 'Enter a renovation prompt before generating the room design.' });
+    }
+
+    const remoteImageUrl = await generateQwenRenovation(imageBase64, renovationPrompt.trim());
+    console.info('[INTERIO Qwen] /prepare_request completed:', remoteImageUrl);
+    return res.json({ renovatedImageUrl: qwenImageProxyUrl(remoteImageUrl) });
+  } catch (qwenErr: any) {
+    const detail = qwenErr?.message || String(qwenErr);
+    console.error('[INTERIO Qwen] Renovation image generation failed:', detail);
+    return res.status(502).json({ error: `Qwen image generation failed: ${detail}` });
+  }
+});
+
 app.post('/api/gemini/reconstruct', async (req, res) => {
   try {
     const { imageBase64, cornerPoints, style, budget, roomType } = req.body;

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ScanLine,
   UploadCloud,
@@ -11,7 +11,9 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { DesignStyle, Point2D, ReconstructionData } from '../types';
-import { reconstructRoomApi } from '../services/api';
+import { generateRoomRenovationApi, reconstructRoomApi } from '../services/api';
+
+const shouldLogQwenDebug = typeof window !== 'undefined' && window.location.hostname === 'localhost';
 
 interface ReconstructionWorkflowProps {
   onView3D: (data: ReconstructionData) => void;
@@ -39,7 +41,7 @@ const SAMPLE_ROOMS = [
     name: 'Raw Concrete Studio',
     desc: 'Unfinished concrete requiring structural curation',
     tag: 'Loft Studio',
-    url: 'https://images.unsplash.com/photo-1502005229762-ee1b2b93e083?auto=format&fit=crop&w=1000&q=80',
+    url: 'https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1000&q=80',
     defaultCorners: [
       { x: 0.15, y: 0.85 },
       { x: 0.85, y: 0.85 },
@@ -52,7 +54,7 @@ const SAMPLE_ROOMS = [
     name: 'Mid-Century Bedroom',
     desc: 'Compact rectangular layout with single window',
     tag: 'Bed Suite',
-    url: 'https://images.unsplash.com/photo-1540518614846-7ede433c4ef2?auto=format&fit=crop&w=1000&q=80',
+    url: 'https://images.unsplash.com/photo-1616486338812-3dadae4b4ace?auto=format&fit=crop&w=1000&q=80',
     defaultCorners: [
       { x: 0.10, y: 0.82 },
       { x: 0.90, y: 0.82 },
@@ -76,12 +78,23 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
   const [style, setStyle] = useState<DesignStyle>('modern');
   const [budget, setBudget] = useState<string>('$15,000 - $25,000');
   const [roomType, setRoomType] = useState<string>('Living Room');
+  const [renovationPrompt, setRenovationPrompt] = useState<string>('');
 
   // Generation & Result state
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationStep, setGenerationStep] = useState<string>('');
   const [result, setResult] = useState<ReconstructionData | null>(null);
+  const [renovatedImageUrl, setRenovatedImageUrl] = useState<string | null>(null);
+  const [afterImageError, setAfterImageError] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (shouldLogQwenDebug) console.log('[QWEN IMAGE STATE]', renovatedImageUrl);
+  }, [renovatedImageUrl]);
+
+  useEffect(() => {
+    if (shouldLogQwenDebug) console.log('[QWEN GENERATING STATE]', isGenerating);
+  }, [isGenerating]);
 
   const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB
 
@@ -126,6 +139,8 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
         { x: 0.28, y: 0.42 },
       ]);
       setResult(null);
+      setRenovatedImageUrl(null);
+      setAfterImageError(false);
     };
     reader.readAsDataURL(file);
   };
@@ -199,14 +214,18 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
       setError(`Mark all 4 floor corners on the photo first (${cornerPoints.length}/4 placed).`);
       return;
     }
+    if (!renovationPrompt.trim()) {
+      setError('Describe the renovation you want before generating the room design.');
+      return;
+    }
 
     setIsGenerating(true);
+    setRenovatedImageUrl(null);
+    setAfterImageError(false);
 
     const steps = [
-      'Performing photogrammetric perspective rectification...',
-      'Estimating structural wall planes, openings, and ceiling clearance...',
-      'Analyzing architectural substrate and lighting orientation...',
-      'Synthesizing full renovation design with furniture & finishes...',
+      'Sending the original room image and renovation request to Qwen...',
+      'Rendering the renovated room while retaining the original geometry...',
     ];
 
     let stepIndex = 0;
@@ -217,17 +236,34 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
     }, 1200);
 
     try {
-      const generated = await reconstructRoomApi({
+      const reconstructionPromise = reconstructRoomApi({
         imageBase64: selectedImage,
         cornerPoints,
         style,
         budget,
         roomType,
+      }).catch((reconstructionError) => {
+        console.error(reconstructionError);
+        return null;
       });
+      const qwenResult = await generateRoomRenovationApi({
+        imageBase64: selectedImage,
+        renovationPrompt,
+      });
+      if (shouldLogQwenDebug) console.log('[QWEN IMAGE STATE ASSIGNMENT]', qwenResult.renovatedImageUrl);
+      setRenovatedImageUrl(qwenResult.renovatedImageUrl);
+      clearInterval(stepInterval);
+      setIsGenerating(false);
 
+      const generated = await reconstructionPromise;
+      if (!generated) {
+        setError('The renovated image is ready, but reconstruction details could not be prepared. You can generate again to retry the 3D data.');
+        return;
+      }
       setResult({
         ...generated,
         imageUrl: selectedImage,
+        renovatedImageUrl: qwenResult.renovatedImageUrl,
         cornerPoints,
       });
     } catch (err: any) {
@@ -315,6 +351,8 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                         setSelectedImage(sample.url);
                         setCornerPoints(sample.defaultCorners);
                         setResult(null);
+                        setRenovatedImageUrl(null);
+                        setAfterImageError(false);
                       }}
                       className={`p-1.5 rounded-xl border text-left transition-colors cursor-pointer overflow-hidden ${
                         isSelected
@@ -373,11 +411,11 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                 />
 
                 {/* SVG Overlay for drawing connecting boundary lines */}
-                <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
                   {cornerPoints.length >= 2 && (
                     <polygon
                       points={cornerPoints
-                        .map((p) => `${p.x * 100}%,${p.y * 100}%`)
+                        .map((p) => `${p.x * 100},${p.y * 100}`)
                         .join(' ')}
                       fill="rgba(255, 255, 255, 0.15)"
                       stroke="#ffffff"
@@ -456,6 +494,24 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
               </div>
             </div>
 
+            <div>
+              <label htmlFor="renovation-prompt" className="text-[11px] text-stone-500 block mb-1">
+                Renovation Prompt
+              </label>
+              <textarea
+                id="renovation-prompt"
+                value={renovationPrompt}
+                onChange={(e) => setRenovationPrompt(e.target.value)}
+                required
+                rows={4}
+                placeholder="Describe how you want to renovate this room... For example: Make this room modern Indian style with beige walls, wooden furniture, warm lighting and light wooden flooring."
+                className="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs text-stone-800 placeholder:text-stone-400 focus:border-stone-900 outline-hidden transition-colors resize-y"
+              />
+              <p className="text-[10px] text-stone-400 mt-1 leading-relaxed">
+                Qwen uses your original photo as the reference. INTERIO keeps your confirmed floor geometry as the source of truth.
+              </p>
+            </div>
+
             <div className="pt-2">
               <button
                 type="submit"
@@ -468,7 +524,7 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                     <span>Analyzing Room...</span>
                   </>
                 ) : (
-                  <span>Generate Renovation Plan</span>
+                    <span>Generate Renovated Room</span>
                 )}
               </button>
 
@@ -487,15 +543,72 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
           </form>
         </div>
 
-        {/* Right Column: Architectural Renovation Transformation Plan */}
+        {/* Right Column: Qwen visual result, with reconstruction details secondary */}
         <div className="lg:col-span-6 space-y-6">
+          <div className="bg-white rounded-2xl border border-stone-200/80 p-6 space-y-5">
+            <div>
+              <h3 className="text-sm font-semibold text-stone-900">Room Renovation Preview</h3>
+              <p className="text-[11px] text-stone-500 mt-0.5">
+                Your original room remains the geometry reference. The After panel shows only the Qwen-generated renovation.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <figure className="space-y-1.5">
+                <div className="aspect-[4/3] min-h-[300px] overflow-hidden rounded-xl bg-stone-100 border border-stone-200">
+                  <img src={selectedImage} alt="Original room before renovation" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                </div>
+                <figcaption className="text-[11px] font-medium text-stone-700">Before · Original room</figcaption>
+              </figure>
+              <figure className="space-y-1.5">
+                <div className="aspect-[4/3] min-h-[300px] overflow-hidden rounded-xl bg-stone-100 border border-stone-200">
+                  {isGenerating ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-stone-500">
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      <span className="text-xs">Generating image…</span>
+                    </div>
+                  ) : renovatedImageUrl && !afterImageError ? (
+                    <img
+                      src={renovatedImageUrl}
+                      alt="Qwen-generated renovated room"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                      onLoad={(event) => {
+                        if (shouldLogQwenDebug) console.log('[QWEN AFTER IMAGE LOADED]', event.currentTarget.currentSrc);
+                      }}
+                      onError={() => {
+                        if (shouldLogQwenDebug) console.error('[QWEN AFTER IMAGE ERROR]', renovatedImageUrl);
+                        setAfterImageError(true);
+                        setError('Qwen generated an image, but it could not be displayed. Please generate it again.');
+                      }}
+                    />
+                  ) : afterImageError ? (
+                    <div className="w-full h-full flex items-center justify-center px-6 text-center text-xs text-red-600 bg-red-50">
+                      The Qwen image could not be displayed. Generate again to request a new result.
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center px-6 text-center text-xs text-stone-400">
+                      Describe your renovation, then generate the After image.
+                    </div>
+                  )}
+                </div>
+                <figcaption className="text-[11px] font-medium text-stone-700">After · Qwen renovation</figcaption>
+              </figure>
+            </div>
+          </div>
+
           {result ? (
-            <div className="space-y-6">
+            <details className="group bg-white rounded-2xl border border-stone-200/80" open={false}>
+              <summary className="cursor-pointer list-none px-5 py-4 flex items-center justify-between text-xs font-semibold text-stone-900">
+                <span>Reconstruction &amp; 3D details</span>
+                <span className="text-stone-400 group-open:hidden">Show</span>
+                <span className="text-stone-400 hidden group-open:inline">Hide</span>
+              </summary>
+              <div className="px-5 pb-5 space-y-6">
               {/* Header Card with 3D Navigation */}
               <div className="bg-white rounded-2xl border border-stone-200/80 p-5 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold text-stone-900">
-                    Renovation Blueprint Ready
+                    Reconstruction Ready
                   </h3>
                   <p className="text-xs text-stone-500 mt-0.5">
                     Estimated volume: {result.estimatedDimensions.width}m × {result.estimatedDimensions.length}m (H: 2.7m)
@@ -617,17 +730,18 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                   </div>
                 </div>
               )}
-            </div>
+              </div>
+            </details>
           ) : (
-            <div className="rounded-2xl border border-stone-200/80 p-8 text-center bg-white flex flex-col items-center justify-center min-h-[380px] space-y-2">
+            <div className="rounded-2xl border border-stone-200/80 p-6 text-center bg-white flex flex-col items-center justify-center space-y-2">
               <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center mx-auto text-stone-400">
                 <ScanLine className="w-5 h-5" />
               </div>
               <h4 className="text-xs font-semibold text-stone-900">
-                Awaiting Diagnostics
+                Reconstruction details will appear here
               </h4>
               <p className="text-xs text-stone-500 max-w-xs leading-relaxed">
-                Confirm your room photograph and floor boundary corners on the left, then click Generate Renovation Plan.
+                Generate a renovation to retain the floor geometry, furniture plan, and View in 3D controls.
               </p>
             </div>
           )}

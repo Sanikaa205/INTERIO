@@ -166,6 +166,7 @@ export interface Point2D {
 
 export interface ReconstructionData {
   imageUrl: string;
+  renovatedImageUrl?: string;
   imageFileName?: string;
   cornerPoints: Point2D[];
   estimatedDimensions: {
