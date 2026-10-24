@@ -2035,16 +2035,17 @@ function outlinePerimeter(rooms: any[], cell: number = 0.2): number {
 // ----------------------------------------------------
 // Grow-by-attachment rejection diagnostics (DEBUG_LAYOUT=1)
 // ----------------------------------------------------
-const rejectStats = { cand: -1, byGate: new Map<string, number>(), byReason: new Map<string, number>() };
+const rejectStats = { cand: -1, byGate: new Map<string, number>(), byReason: new Map<string, { n: number; sample: string }>() };
 function logReject(gate: string, reason: string): void {
   rejectStats.byGate.set(gate, (rejectStats.byGate.get(gate) || 0) + 1);
   const key = `${gate}: ${reason.replace(/[\d.]+/g, '#')}`;
-  rejectStats.byReason.set(key, (rejectStats.byReason.get(key) || 0) + 1);
+  const prev = rejectStats.byReason.get(key);
+  rejectStats.byReason.set(key, { n: (prev?.n || 0) + 1, sample: prev?.sample || `${gate}: ${reason}` });
   if (process.env.DEBUG_LAYOUT) console.error(`[reject] cand=${rejectStats.cand} gate=${gate} reason=${reason}`);
 }
 function summarizeRejects(): string {
   const gates = [...rejectStats.byGate.entries()].map(([g, n]) => `${g}=${n}`).join(' ');
-  const top = [...rejectStats.byReason.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([r, n]) => `  ${n}x ${r}`).join('\n');
+  const top = [...rejectStats.byReason.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 3).map(([r, v]) => `  ${v.n}x ${r}`).join('\n');
   return `per-gate: ${gates || 'none'}\ntop reasons:\n${top}`;
 }
 
@@ -2059,7 +2060,8 @@ function summarizeRejects(): string {
 // no legal, sturdy-enough (>=1.2m wall) door target.
 function assignDoorsGrowByAttachment(
   rooms: any[], plotW: number, plotL: number,
-  masterBedId: string | undefined, suiteOnlyIds: Set<string>
+  masterBedId: string | undefined, suiteOnlyIds: Set<string>,
+  minDoorShared: number = 1.2
 ): boolean {
   const groupOf = (r: any): AttachGroup => r._group;
   for (const room of rooms) {
@@ -2080,7 +2082,11 @@ function assignDoorsGrowByAttachment(
       // off from the entry. Door it into the core first.
       const coreTargets = rooms.filter((r) => groupOf(r) === 'core');
       const touchesCore = coreTargets.some((r) => { const sd = findTouchingSide(room, r); return !!sd && (sd === 'top' || sd === 'bottom' ? Math.min(room.x + room.width, r.x + r.width) - Math.max(room.x, r.x) : Math.min(room.y + room.height, r.y + r.height) - Math.max(room.y, r.y)) >= 1.2; });
-      allowed = touchesCore ? coreTargets : rooms.filter((r) => r !== room);
+      // Documented fallback: when placement left the hallway touching only the
+      // kitchen (which itself doors into the core), link through the kitchen
+      // rather than to a bedroom dead end; the private wing stays reachable.
+      allowed = touchesCore ? coreTargets : rooms.filter((r) => groupOf(r) === 'kitchen' || groupOf(r) === 'core');
+      if (!allowed.some((r) => findTouchingSide(room, r))) allowed = rooms.filter((r) => r !== room);
     } else {
       allowed = rooms.filter((r) => r !== room);
     }
@@ -2092,20 +2098,26 @@ function assignDoorsGrowByAttachment(
         const overlap = side === 'top' || side === 'bottom'
           ? Math.min(room.x + room.width, other.x + other.width) - Math.max(room.x, other.x)
           : Math.min(room.y + room.height, other.y + other.height) - Math.max(room.y, other.y);
-        return overlap >= 1.2 ? { other, side, overlap } : null;
+        return overlap >= minDoorShared ? { other, side, overlap } : null;
       })
       .filter((c): c is { other: any; side: 'top' | 'bottom' | 'left' | 'right'; overlap: number } => !!c)
       .sort((a, b) => b.overlap - a.overlap);
 
     if (!candidates.length) {
       const touching = rooms.filter((o) => o !== room && findTouchingSide(room, o)).map((o) => `${o.name}[${groupOf(o)}]`);
-      logReject('doors', `${room.type} ${room.id} (${room.name}): no legal door target among ${allowed.map((a) => a.id).join(',') || 'none'} with >=1.2m shared wall; actually touches [${touching.join(', ')}]`);
+      logReject('doors', `${room.type} ${room.id} (${room.name}): no legal door target among ${allowed.map((a) => a.id).join(',') || 'none'} with >=${minDoorShared}m shared wall; actually touches [${touching.join(', ')}]`);
       return false;
     }
-    const { side } = candidates[0];
+    const { other, side, overlap } = candidates[0];
     const wallLen = wallLengthForSide(side, room.width, room.height);
-    const doorWidth = Math.min(0.9, wallLen - 0.3);
-    const opening = clampOpeningToWall((wallLen - doorWidth) / 2, doorWidth, wallLen, 0.6, 1.1);
+    const doorWidth = Math.min(0.9, wallLen - 0.3, overlap - 0.2);
+    // Centre the door on the stretch of wall actually shared with the target
+    // (centring on the whole wall can land it outside a partial overlap).
+    const horizontal = side === 'top' || side === 'bottom';
+    const sharedMid = horizontal
+      ? (Math.max(room.x, other.x) + Math.min(room.x + room.width, other.x + other.width)) / 2 - room.x
+      : (Math.max(room.y, other.y) + Math.min(room.y + room.height, other.y + other.height)) / 2 - room.y;
+    const opening = clampOpeningToWall(sharedMid - doorWidth / 2, doorWidth, wallLen, 0.6, 1.1);
     room.doors = [{ side, offset: opening.offset, width: opening.width, swing: 'in' }];
     room.doorSide = side;
   }
@@ -2192,8 +2204,14 @@ function buildGrowByAttachmentCandidate(
   // sides plus an end, so a stub hallway strands them. Size the spine to it.
   const hallwayFrontageRooms = (masterBed ? 1 : 0) + otherBedrooms.length + sharedBaths.length;
   // Capped at 5.4m: the hallway must also stay >=2.1m wide (min side) within its 2.6 aspect cap.
-  const hallwayMinLong = hallwayRoom ? Math.min(5.4, Math.max(3, 1.5 * Math.ceil(hallwayFrontageRooms / 2) + 1.5)) : 3;
-  if (hallwayRoom) hallwayRoom.targetArea = Math.max(hallwayRoom.targetArea, hallwayMinLong * 2.1);
+  // Hallway width scales with plot size: 2.1m on a roomy plot (net >= 200 m2)
+  // down to 1.5m (the practical minimum) on a tight one (net <= 110 m2), since
+  // on a small plot a wide strip eats the depth the private rooms need.
+  const netPlotArea = bounds.width * bounds.height;
+  const hallwayShort = roundPlan(clamp(1.5 + ((netPlotArea - 110) / 90) * 0.6, 1.5, 2.1));
+  const hallwayMaxLong = Math.floor(hallwayShort * maxAspectForType('hallway') * 0.98 * 10) / 10; // stays inside the aspect cap
+  const hallwayMinLong = hallwayRoom ? Math.min(hallwayMaxLong, Math.max(3, 1.5 * Math.ceil(hallwayFrontageRooms / 2) + 1.5)) : 3;
+  if (hallwayRoom) hallwayRoom.targetArea = Math.max(hallwayRoom.targetArea, hallwayMinLong * hallwayShort);
 
   const targetAreaById = new Map(requested.map((r) => [r.id, r.targetArea]));
   if (hallwayRoom) targetAreaById.set(hallwayRoom.id, hallwayRoom.targetArea);
@@ -2206,10 +2224,15 @@ function buildGrowByAttachmentCandidate(
       // A hallway is a circulation spine, not just a wide room: it has to
       // actually run somewhere, so the long side is floored at 3m even if
       // that pushes it past the aspect-ratio-driven size a little.
-      const minLong = r.id === hallwayRoom?.id ? hallwayMinLong : 3;
-      if (r.type === 'hallway' && Math.max(size.width, size.height) < minLong) {
+      if (r.id === hallwayRoom?.id) {
+        const shortSide = Math.max(1.5, Math.min(Math.min(size.width, size.height), hallwayShort));
+        const longSide = Math.min(shortSide * maxAspectForType('hallway') * 0.98, Math.max(Math.max(size.width, size.height), hallwayMinLong));
+        size = size.width >= size.height ? { width: roundPlan(longSide), height: roundPlan(shortSide) } : { width: roundPlan(shortSide), height: roundPlan(longSide) };
+      }
+      const minLong = 3;
+      if (r.type === 'hallway' && r.id !== hallwayRoom?.id && Math.max(size.width, size.height) < minLong) {
         const longSide = minLong;
-        const shortSide = Math.max(r.type === 'hallway' ? 2.1 : 1.2, r.targetArea / longSide);
+        const shortSide = Math.max(1.2, r.targetArea / longSide);
         size = size.width >= size.height ? { width: longSide, height: shortSide } : { width: shortSide, height: longSide };
       }
       sizeCache.set(r.id, size);
@@ -2228,6 +2251,11 @@ function buildGrowByAttachmentCandidate(
     if (room.type === 'bathroom') return (p) => p._group === 'hallway' || (!hallwayRoom && p._group === 'core');
     return null;
   };
+  // Shared wall a door target needs: 1.3m on a roomy plot down to 0.9m (a door
+  // plus jamb) on a tight one; the door-assignment pass accepts 0.1m less to
+  // survive grid snapping.
+  const doorMinShared = roundPlan(clamp(0.9 + (((bounds.width * bounds.height) - 110) / 90) * 0.4, 0.9, 1.3));
+  const DOOR_TARGET_MIN_SHARED = doorMinShared;
   const hasDoorTarget = (rect: ZoneRect, isTarget: (p: any) => boolean): boolean =>
     placed.some((p) => {
       if (!isTarget(p)) return false;
@@ -2236,38 +2264,66 @@ function buildGrowByAttachmentCandidate(
       const overlap = side === 'top' || side === 'bottom'
         ? Math.min(rect.x + rect.width, p.x + p.width) - Math.max(rect.x, p.x)
         : Math.min(rect.y + rect.height, p.y + p.height) - Math.max(rect.y, p.y);
-      return overlap >= 1.3; // small margin over the 1.2m door rule to survive grid snapping
+      return overlap >= DOOR_TARGET_MIN_SHARED;
     });
 
   function place(room: RoomMeta, group: AttachGroup, preferredGroups: AttachGroup[]): boolean {
-    const size = sizeOf(room);
+    const baseSize = sizeOf(room);
     const doorTarget = doorTargetsFor(room);
     if (placed.length === 0) {
+      const size = baseSize;
       const x = roundPlan(bounds.x + (bounds.width - size.width) / 2);
       const y = roundPlan(bounds.y + bounds.height - size.height);
       if (x < bounds.x - 0.01 || y < bounds.y - 0.01 || x + size.width > bounds.x + bounds.width + 0.01) return false;
       placed.push({ id: room.id, name: room.name, type: room.type, x, y, width: size.width, height: size.height, color: palette[placed.length % palette.length], _group: group });
       return true;
     }
-    let best: { x: number; y: number; score: number } | null = null;
-    for (const anchor of placed) {
-      for (const side of ['bottom', 'top', 'left', 'right'] as const) {
-        for (const offset of candidateOffsets(anchor, size, side, bounds)) {
-          const { x, y } = offset;
-          if (x < bounds.x - 0.01 || y < bounds.y - 0.01 || x + size.width > bounds.x + bounds.width + 0.01 || y + size.height > bounds.y + bounds.height + 0.01) continue;
-          const candidateRect = { x, y, width: size.width, height: size.height };
-          if (placed.some((p) => roomRectsOverlap(candidateRect, p))) continue;
-          const shared = sharedWallLength(candidateRect, anchor, side);
-          const minShared = room.type === 'kitchen' ? 2.0 : 1.2;
-          if (shared < minShared) continue;
-          if (doorTarget && !hasDoorTarget(candidateRect, doorTarget)) continue;
-          const score = scorePlacementCandidate(candidateRect, anchor, side, group, preferredGroups, placed, bounds);
-          if (!best || score > best.score) best = { x, y, score };
+    // Shapes to try, in order: the sampled one, its 90-degree rotation, then
+    // (non-hallway) a squarer rectangle of the same area. A shape that has no
+    // legal spot on a tight plot often fits rotated or squarer; aspect caps
+    // are never exceeded (squarer is strictly closer to 1:1).
+    const variants: { width: number; height: number }[] = [baseSize, { width: baseSize.height, height: baseSize.width }];
+    if (room.type !== 'hallway') {
+      const side = roundPlan(Math.sqrt(baseSize.width * baseSize.height));
+      const minSide = Math.min(baseSize.width, baseSize.height);
+      if (side > minSide + 0.2) variants.push({ width: side, height: side });
+    }
+    let chosen: { x: number; y: number; width: number; height: number } | null = null;
+    let lastWhy = { tried: 0, outOfBounds: 0, overlap: 0, sharedWall: 0, noDoorTarget: 0 };
+    for (const size of variants) {
+      const legal: { x: number; y: number; score: number }[] = [];
+      const why = { tried: 0, outOfBounds: 0, overlap: 0, sharedWall: 0, noDoorTarget: 0 };
+      for (const anchor of placed) {
+        for (const side of ['bottom', 'top', 'left', 'right'] as const) {
+          for (const offset of candidateOffsets(anchor, size, side, bounds)) {
+            const { x, y } = offset;
+            why.tried++;
+            if (x < bounds.x - 0.01 || y < bounds.y - 0.01 || x + size.width > bounds.x + bounds.width + 0.01 || y + size.height > bounds.y + bounds.height + 0.01) { why.outOfBounds++; continue; }
+            const candidateRect = { x, y, width: size.width, height: size.height };
+            if (placed.some((p) => roomRectsOverlap(candidateRect, p))) { why.overlap++; continue; }
+            const shared = sharedWallLength(candidateRect, anchor, side);
+            const minShared = room.type === 'kitchen' ? 2.0 : Math.min(1.2, doorMinShared);
+            if (shared < minShared) { why.sharedWall++; continue; }
+            if (doorTarget && !hasDoorTarget(candidateRect, doorTarget)) { why.noDoorTarget++; continue; }
+            legal.push({ x, y, score: scorePlacementCandidate(candidateRect, anchor, side, group, preferredGroups, placed, bounds) });
+          }
         }
       }
+      lastWhy = why;
+      if (!legal.length) continue;
+      // Mostly take the top-scoring spot, but let later candidates drift to a
+      // runner-up: always-greedy placement paints itself into a corner on a
+      // tight plot, and only sizes varied between the 60 candidates.
+      legal.sort((a, b) => b.score - a.score);
+      const pick = legal[Math.min(legal.length - 1, Math.floor(rng() * rng() * 4))];
+      chosen = { x: pick.x, y: pick.y, width: size.width, height: size.height };
+      break;
     }
-    if (!best) { logReject('place', `${room.type} ${room.id} (${room.name}): no legal spot${doorTarget ? ' with a door target' : ''} size=${size.width}x${size.height} placed=[${placed.map((p) => `${p.id}:${p.x},${p.y},${p.width}x${p.height}`).join(' ')}]`); return false; }
-    placed.push({ id: room.id, name: room.name, type: room.type, x: best.x, y: best.y, width: size.width, height: size.height, color: palette[placed.length % palette.length], _group: group });
+    if (!chosen) {
+      logReject('place', `${room.type} ${room.id} (${room.name}): no legal spot${doorTarget ? ' with a door target' : ''} in any of ${variants.length} shapes [last shape: positions tried=${lastWhy.tried} out-of-bounds=${lastWhy.outOfBounds} overlap=${lastWhy.overlap} shared-wall<min=${lastWhy.sharedWall} no-door-target(>=${DOOR_TARGET_MIN_SHARED}m)=${lastWhy.noDoorTarget}] size=${baseSize.width}x${baseSize.height} placed=[${placed.map((p) => `${p.id}:${p.x},${p.y},${p.width}x${p.height}`).join(' ')}]`);
+      return false;
+    }
+    placed.push({ id: room.id, name: room.name, type: room.type, x: chosen.x, y: chosen.y, width: chosen.width, height: chosen.height, color: palette[placed.length % palette.length], _group: group });
     return true;
   }
 
@@ -2328,7 +2384,7 @@ function buildGrowByAttachmentCandidate(
   const suiteOnlyIds = new Set<string>();
   if (masterBath) suiteOnlyIds.add(masterBath.id);
   if (walkIn) suiteOnlyIds.add(walkIn.id);
-  if (!assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds)) return null;
+  if (!assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds, doorMinShared - 0.1)) return null;
   const unreachable = findUnreachableRooms(rooms, circulation, plotW, plotL);
   if (unreachable.length > 0) { logReject('reach', `unreachable: ${unreachable.map((r: any) => `${r.id}(${r.type})`).join(', ')}`); return null; }
 
@@ -2336,7 +2392,7 @@ function buildGrowByAttachmentCandidate(
   return { rooms, circulation };
 }
 
-export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[], userRequirements: string = '', variationSeed: string = '') {
+export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[], userRequirements: string = '', variationSeed: string = '', probeOnly: boolean = false) {
   const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
   const plotArea = plotW * plotL;
   const rawRequested = requestedRooms.length ? requestedRooms : [
@@ -2431,14 +2487,18 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
   // legacy generators only run when explicitly opted into.
   const allowLegacyFallback = process.env.INTERIO_LEGACY_FALLBACK === '1';
   if (!best) {
-    console.warn(`[INTERIO Layout] WARNING: all ${GROW_CANDIDATE_COUNT} grow-by-attachment candidates were rejected for ${plotW}x${plotL}m.
+    const failure = describeTopFailure();
+    const minimum = probeOnly ? null : findMinimumWorkingPlot(plotW, plotL, requestedRooms, userRequirements, variationSeed);
+    if (!probeOnly) console.warn(`[INTERIO Layout] WARNING: all ${GROW_CANDIDATE_COUNT} grow-by-attachment candidates were rejected for ${plotW}x${plotL}m.
 ${summarizeRejects()}
 ${allowLegacyFallback ? 'INTERIO_LEGACY_FALLBACK=1: falling back to the legacy core-wings/zone-slicer generators (rules NOT enforced).' : 'Legacy fallback is disabled (set INTERIO_LEGACY_FALLBACK=1 to allow it); returning a constraint error.'}`);
     if (!allowLegacyFallback) {
       return {
         plotWidth: plotW, plotLength: plotL, plotArea: roundPlan(plotArea), totalBuiltArea: 0, openSpaceArea: roundPlan(plotArea),
         architecturalStyle: 'Zoned Residential Plan', designNotes: '', circulation: [] as any[], rooms: [] as any[],
-        constraintError: `Could not generate a layout that satisfies the room-shape and door rules for a ${plotW}m × ${plotL}m plot with these rooms. Try a larger plot, fewer rooms, or a different variation.`,
+        constraintError: `Could not fit a valid layout on a ${plotW}m × ${plotL}m plot: ${failure} ` + (minimum
+          ? `A plot of about ${minimum.w}m × ${minimum.l}m is the smallest tested size that works for these rooms; otherwise reduce the room count or sizes.`
+          : `No larger plot up to +6m per side worked either; reduce the room count or sizes.`),
       };
     }
   }
@@ -2523,6 +2583,40 @@ ${allowLegacyFallback ? 'INTERIO_LEGACY_FALLBACK=1: falling back to the legacy c
       ? `The ${plotW}m × ${plotL}m plot cannot accommodate all requested rooms with the minimum practical room dimensions and circulation clearance. Reduce room sizes/count or increase the plot dimensions.`
       : undefined,
   };
+}
+
+// Plain-language summary of the most common grow-by-attachment rejection, for
+// the user-facing constraint error.
+function describeTopFailure(): string {
+  const top = [...rejectStats.byReason.values()].sort((a, b) => b.n - a.n)[0];
+  const total = [...rejectStats.byGate.values()].reduce((a, b) => a + b, 0) || 1;
+  if (!top) return 'no candidate layout could be built.';
+  const m = top.sample.match(/^(\w+): ([\w-]+) \S+ \(([^)]*)\)/);
+  const detail = top.sample.startsWith('place') && m
+    ? `the ${m[3]} (${m[2]}) had no position left that fits inside the plot with a legal door onto a hallway/core`
+    : top.sample.startsWith('void') ? 'rooms could not be packed without an enclosed gap'
+    : top.sample.startsWith('doors') ? `a restricted room (${top.sample.split(' (')[1]?.split(')')[0] || 'bedroom/bathroom'}) had no legal door target`
+    : top.sample.startsWith('reach') ? 'some rooms were unreachable from the entry'
+    : top.sample.slice(0, 120);
+  return `${detail} (${top.n} of ${total} rejections, the most common failure).`;
+}
+
+// Smallest slightly-larger plot (up to +6m per side, smallest area first)
+// that the grow-by-attachment generator can solve for the same program.
+function findMinimumWorkingPlot(plotW: number, plotL: number, rooms: any[], req: string, seed: string): { w: number; l: number } | null {
+  const tries: { w: number; l: number }[] = [];
+  for (let dw = 0; dw <= 6; dw++) for (let dl = 0; dl <= 6; dl++) if (dw || dl) tries.push({ w: plotW + dw, l: plotL + dl });
+  tries.sort((a, b) => a.w * a.l - b.w * b.l);
+  const saved = { gates: new Map(rejectStats.byGate), reasons: new Map(rejectStats.byReason) };
+  try {
+    for (const t of tries) {
+      const r: any = generateAlgorithmicFloorPlan(t.w, t.l, rooms, req, seed, true);
+      if (!r.constraintError) return t;
+    }
+  } finally {
+    rejectStats.byGate = saved.gates; rejectStats.byReason = saved.reasons;
+  }
+  return null;
 }
 
 // Public rooms (living/dining/kitchen/entry/hallway/balcony) group together,
@@ -3087,7 +3181,7 @@ function practicalArea(type: string | undefined): number {
 
 function minSideForType(type: string | undefined): number {
   const t = String(type || '').toLowerCase();
-  return t.includes('bath') ? 1.5 : t.includes('powder') || t.includes('laundry') || t.includes('utility') ? 1.8 : 2.1;
+  return t.includes('bath') || t === 'hallway' ? 1.5 : t.includes('powder') || t.includes('laundry') || t.includes('utility') ? 1.8 : 2.1;
 }
 
 function hasPracticalDimensions(room: any): boolean {
