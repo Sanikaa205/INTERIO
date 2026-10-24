@@ -7,6 +7,8 @@ export interface FurnitureSuggestion extends Partial<FurnitureItem> {
   depth: number;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
   clearance?: number;
+  relativeTo?: string;
+  relativeSide?: 'north' | 'south' | 'east' | 'west';
 }
 
 export interface LayoutOpening {
@@ -74,11 +76,18 @@ function wallPenalty(item: { x: number; y: number; width: number; depth: number 
 export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room: LayoutRoom): FurnitureItem[] {
   if (!(room.width > 0 && room.depth > 0)) throw new Error('Room dimensions must be greater than zero.');
   const placed: FurnitureItem[] = [];
-  for (const [index, suggestion] of suggestions.entries()) {
+  const placedRelationships = new Map<string, string>();
+  const ordered = suggestions.map((suggestion, index) => ({ suggestion, index })).sort((a, b) => {
+    const aDependent = Boolean(a.suggestion.relativeTo), bDependent = Boolean(b.suggestion.relativeTo);
+    return Number(aDependent) - Number(bDependent) || a.index - b.index;
+  });
+  for (const { suggestion, index } of ordered) {
     const width0 = Math.max(0.25, Number(suggestion.width) || 0.8);
     const depth0 = Math.max(0.25, Number(suggestion.depth) || 0.8);
     let best: (FurnitureItem & { score: number }) | null = null;
-    for (const rotation of ROTATIONS) {
+    const preferredRotation = Number(suggestion.rotation);
+    const rotations = ROTATIONS.slice().sort((a, b) => Number(b === preferredRotation) - Number(a === preferredRotation));
+    for (const rotation of rotations) {
       const rotated = rotation % 180 !== 0;
       const width = rotated ? depth0 : width0;
       const depth = rotated ? width0 : depth0;
@@ -96,6 +105,8 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
           });
           if (collides) continue;
           const clearanceHit = suggestion.category !== 'decor' && placed.some((other) => {
+            if (suggestion.relativeTo === other.id) return false;
+            if (suggestion.relativeTo && placedRelationships.get(other.id) === suggestion.relativeTo) return false;
             if (other.category === 'decor' || /rug/i.test(other.name)) return false;
             const clearance = Math.max(suggestion.clearance ?? CLEARANCE, other.clearance ?? CLEARANCE);
             return rectanglesOverlap(
@@ -107,14 +118,30 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
           const anchorDistance = Number.isFinite(suggestion.x) && Number.isFinite(suggestion.y)
             ? Math.hypot(candidate.x - Number(suggestion.x), candidate.y - Number(suggestion.y))
             : 0;
-          const score = anchorDistance * 4 + wallPenalty(candidate, room, suggestion.preferredWall) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
+          const related = suggestion.relativeTo ? placed.find((other) => other.id === suggestion.relativeTo) : undefined;
+          let relationshipPenalty = 0;
+          if (related && suggestion.relativeSide) {
+            const target = footprint(related);
+            const gap = 0.1;
+            const targetX = suggestion.relativeSide === 'west' ? target.x - gap - width
+              : suggestion.relativeSide === 'east' ? target.x + target.width + gap
+              : target.x + (target.width - width) / 2;
+            const targetY = suggestion.relativeSide === 'north' ? target.y - gap - depth
+              : suggestion.relativeSide === 'south' ? target.y + target.depth + gap
+              : target.y + (target.depth - depth) / 2;
+            relationshipPenalty = Math.hypot(candidate.x - targetX, candidate.y - targetY);
+          }
+          const rotationPenalty = Number.isFinite(preferredRotation) && rotation !== preferredRotation ? 1.5 : 0;
+          const score = relationshipPenalty * 12 + anchorDistance * (related ? 0.15 : 4) + rotationPenalty + (related ? 0 : wallPenalty(candidate, room, suggestion.preferredWall)) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
           if (!best || score < best.score) best = { ...candidate, score, rotation, width: width0, depth: depth0 } as FurnitureItem & { score: number };
         }
       }
     }
     if (!best) continue; // Gracefully omit a suggested item that cannot fit.
     const { score: _score, ...item } = best;
-    placed.push({ ...item, id: suggestion.id || `f_${index + 1}`, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall, clearance: suggestion.clearance });
+    const id = suggestion.id || `f_${index + 1}`;
+    placed.push({ ...item, id, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall, clearance: suggestion.clearance });
+    if (suggestion.relativeTo) placedRelationships.set(id, suggestion.relativeTo);
   }
   return placed;
 }

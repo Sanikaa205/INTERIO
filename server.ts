@@ -520,6 +520,35 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
       );
       essentials.push(...requirementExtras);
       const completedSuggestions = suggestions.length ? [...suggestions, ...essentials] : fallbackSuggestions;
+      if (typeKey === 'kitchenDining' && suggestions.length) {
+        // Keep the generated furniture and sizing, but anchor kitchen and dining
+        // pieces to their distinct deterministic zones before collision solving.
+        const anchors = fallbackSuggestions;
+        for (const suggestion of completedSuggestions) {
+          const anchor = anchors.find((item) => /counter|cabinet|kitchen/i.test(item.name) && /counter|cabinet|kitchen/i.test(suggestion.name))
+            || anchors.find((item) => /refrigerator|fridge/i.test(item.name) && /refrigerator|fridge/i.test(suggestion.name))
+            || anchors.find((item) => /dining table/i.test(item.name) && /dining table/i.test(suggestion.name))
+            || anchors.find((item) => /dining chair/i.test(item.name) && /chair/i.test(suggestion.name));
+          if (anchor) {
+            suggestion.x = anchor.x;
+            suggestion.y = anchor.y;
+            suggestion.preferredWall = anchor.preferredWall;
+          }
+        }
+      }
+      if (typeKey === 'dining' || typeKey === 'kitchenDining') {
+        const table = completedSuggestions.find((item) => /dining table/i.test(item.name));
+        const chairs = completedSuggestions.filter((item) => /chair/i.test(item.name) || item.category === 'seating' && /dining/i.test(item.name));
+        const sides = ['north', 'south', 'west', 'east'] as const;
+        const facing = { north: 0, south: 180, west: 90, east: 270 } as const;
+        if (table) chairs.forEach((chair, index) => {
+          const side = sides[index % sides.length];
+          chair.relativeTo = table.id || 'dining-table';
+          chair.relativeSide = side;
+          chair.rotation = facing[side];
+          chair.clearance = Math.max(chair.clearance || 0, 0.45);
+        });
+      }
       const optimizerRoom = { width: w, depth: l, openings: validOpenings, doorClearance: roomDoorClearance(w, l) };
       let furniture = optimizeFurnitureLayout(completedSuggestions, optimizerRoom);
       if (!furniture.length) furniture = optimizeFurnitureLayout(fallbackSuggestions, optimizerRoom);

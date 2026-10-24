@@ -87,6 +87,25 @@ test('room-specific briefs create the correct furniture and fit it to different 
       const a = footprint(layout[i]), b = footprint(layout[j]);
       assert.ok(a.x + a.width <= b.x + 1e-6 || b.x + b.width <= a.x + 1e-6 || a.y + a.depth <= b.y + 1e-6 || b.y + b.depth <= a.y + 1e-6, `${room.type} furniture footprints do not overlap`);
     }
+    if (room.type === 'Kitchen & Dining') {
+      const counter = layout.find((item) => /counter/i.test(item.name))!;
+      const table = layout.find((item) => /dining table/i.test(item.name))!;
+      assert.ok(table.y > counter.y + counter.depth, 'dining table stays in a separate zone beyond the kitchen counter');
+      assert.ok(layout.filter((item) => /dining chair/i.test(item.name)).length >= 2, 'dining zone has seating');
+    }
+    if (/Dining Room|Kitchen & Dining/.test(room.type)) {
+      const table = layout.find((item) => /dining table/i.test(item.name))!;
+      const tableRect = footprint(table);
+      for (const chair of layout.filter((item) => /dining chair/i.test(item.name))) {
+        const chairRect = footprint(chair);
+        const side = chair.id.endsWith('-n') ? 'north' : chair.id.endsWith('-s') ? 'south' : chair.id.endsWith('-w') ? 'west' : 'east';
+        assert.equal(chair.rotation, ({ north: 0, south: 180, west: 90, east: 270 } as const)[side], `${chair.id} faces the table`);
+        if (side === 'north') assert.ok(tableRect.y - (chairRect.y + chairRect.depth) >= -1e-6 && tableRect.y - (chairRect.y + chairRect.depth) <= .2, 'north chair aligns against the table edge');
+        if (side === 'south') assert.ok(chairRect.y - (tableRect.y + tableRect.depth) >= -1e-6 && chairRect.y - (tableRect.y + tableRect.depth) <= .2, 'south chair aligns against the table edge');
+        if (side === 'west') assert.ok(tableRect.x - (chairRect.x + chairRect.width) >= -1e-6 && tableRect.x - (chairRect.x + chairRect.width) <= .2, 'west chair aligns against the table edge');
+        if (side === 'east') assert.ok(chairRect.x - (tableRect.x + tableRect.width) >= -1e-6 && chairRect.x - (tableRect.x + tableRect.width) <= .2, 'east chair aligns against the table edge');
+      }
+    }
   }
 
   const compact = createRoomFurnitureSuggestions('Living Room', 4, 4, 'modern', palette);
