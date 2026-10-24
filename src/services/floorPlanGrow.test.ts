@@ -35,7 +35,7 @@ async function assertValidPlan(w: number, l: number, rooms: any[], seed = '') {
   return plan;
 }
 
-for (const [w, l] of [[10, 12], [12, 12], [12, 15], [14, 16], [15, 20]]) {
+for (const [w, l] of [[12, 12], [12, 15], [14, 16], [15, 20]]) {
   test(`${w}x${l} plot: the UI default program yields a valid plan`, () => assertValidPlan(w, l, UI_DEFAULT_PROGRAM));
 }
 test('12x15 and 14x16 plots: the larger program yields a valid plan', async () => {
@@ -64,4 +64,22 @@ test('a plot that is too small returns a specific 422 message with a minimum plo
   assert.match(plan.constraintError, /8m × 8m/);
   assert.match(plan.constraintError, /had no position|rooms could not be packed|unreachable|no legal door/);
   assert.match(plan.constraintError, /about \d+m × \d+m|reduce the room count/);
+});
+
+// 82 m2 of minimum room areas plus foyer and hallway on 107 m2 of net plot: with
+// minimum areas honoured (not shaved), this does not fit, and the user is told
+// what would -- never a silently undersized room.
+test('10x12 plot: the UI default program either fits with every minimum met, or gets a specific 422 with a workable plot size', async () => {
+  const { generateAlgorithmicFloorPlan } = await import('../../server.ts');
+  const plan: any = generateAlgorithmicFloorPlan(10, 12, UI_DEFAULT_PROGRAM, '', '');
+  if (plan.constraintError) {
+    assert.match(plan.constraintError, /10m × 12m/);
+    assert.match(plan.constraintError, /about \d+m × \d+m/);
+  } else {
+    for (const room of UI_DEFAULT_PROGRAM) {
+      const r = plan.rooms.find((x: any) => x.name === room.name);
+      const shortfall = plan.designNotes.includes(room.name) && /Tight plot/.test(plan.designNotes);
+      assert.ok(r.width * r.height >= room.minSize - 0.05 || shortfall, `${room.name} is under its minimum and the plan does not say so`);
+    }
+  }
 });

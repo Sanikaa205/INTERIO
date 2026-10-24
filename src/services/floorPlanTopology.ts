@@ -5,6 +5,8 @@
 // attach to one another, and which pairs must share a wall. The deterministic
 // grow-by-attachment solver does all geometry and treats this as a hint.
 
+import type { LayoutConstraints, RelSide } from './layoutConstraints';
+
 export type EntrySide = 'bottom' | 'top' | 'left' | 'right';
 export type Zone = 'public' | 'private';
 
@@ -14,6 +16,8 @@ export interface TopologyHint {
   /** Placement sequence. attachTo is a room that appears EARLIER, or ENTRY / HALLWAY. */
   attachmentOrder: { room: string; attachTo: string }[];
   adjacencyPairs: { a: string; b: string }[];
+  /** Constraints the model read out of the user's written requirements (optional). */
+  constraints?: Partial<LayoutConstraints>;
 }
 
 export interface ProgramRoom {
@@ -65,6 +69,28 @@ export const TOPOLOGY_RESPONSE_SCHEMA = {
   },
   required: ['entrySide', 'rooms', 'attachmentOrder', 'adjacencyPairs'],
 } as const;
+
+// Optional block: what the USER asked for in words. Kept out of `required` so a
+// reply with no usable requirements is still a valid topology.
+(TOPOLOGY_RESPONSE_SCHEMA.properties as Record<string, unknown>).constraints = {
+  type: 'object',
+  properties: {
+    adjacentPairs: { type: 'array', items: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } }, required: ['a', 'b'] } },
+    avoidPairs: { type: 'array', items: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } }, required: ['a', 'b'] } },
+    placements: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { room: { type: 'string' }, side: { type: 'string', enum: ['front', 'back', 'top', 'bottom', 'left', 'right'] } },
+        required: ['room', 'side'],
+      },
+    },
+    sharedBathrooms: { type: 'array', items: { type: 'string' } },
+    minimalCorridor: { type: 'boolean' },
+    bedroomPrivacy: { type: 'boolean' },
+    naturalLight: { type: 'boolean' },
+  },
+};
 
 const key = (s: unknown) => String(s ?? '').trim().toLowerCase();
 
@@ -147,7 +173,34 @@ export function validateTopology(raw: unknown, program: ProgramRoom[]): Topology
     pairs.push({ a, b });
   }
 
-  return { ok: true, hint: { entrySide: r.entrySide, zones, attachmentOrder: order, adjacencyPairs: pairs } };
+  // Optional constraints: bad entries are dropped, never a reason to reject the topology.
+  const c = r.constraints && typeof r.constraints === 'object' ? r.constraints : {};
+  const pairList = (list: unknown) => {
+    const out: { a: string; b: string }[] = [];
+    for (const p of Array.isArray(list) ? list : []) {
+      const a = canonical((p as any)?.a);
+      const b = canonical((p as any)?.b);
+      if (a && b && key(a) !== key(b)) out.push({ a, b });
+    }
+    return out;
+  };
+  const SIDES: RelSide[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
+  const placements: { room: string; side: RelSide }[] = [];
+  for (const p of Array.isArray(c.placements) ? c.placements : []) {
+    const room = canonical(p?.room);
+    if (room && SIDES.includes(p?.side)) placements.push({ room, side: p.side });
+  }
+  const sharedBathrooms: string[] = [];
+  for (const n of Array.isArray(c.sharedBathrooms) ? c.sharedBathrooms : []) {
+    const name = canonical(n);
+    if (name) sharedBathrooms.push(name);
+  }
+  const constraints: Partial<LayoutConstraints> = {
+    adjacent: pairList(c.adjacentPairs), avoid: pairList(c.avoidPairs), placements, sharedBathrooms,
+    minimalCorridor: c.minimalCorridor === true, bedroomPrivacy: c.bedroomPrivacy === true, naturalLight: c.naturalLight === true,
+  };
+
+  return { ok: true, hint: { entrySide: r.entrySide, zones, attachmentOrder: order, adjacencyPairs: pairs, constraints } };
 }
 
 /** Prompt asking for topology only. `previousError` is set on the single retry. */
@@ -176,6 +229,8 @@ Decide:
 2. rooms: for every room, give its exact name and mark it public or private. Public = living, dining, kitchen, entry. Private = bedrooms, bathrooms, study, laundry.
 3. attachmentOrder: the sequence in which rooms are placed, one entry per room (all ${program.length} rooms). attachTo is either a room that appears EARLIER in the sequence, or "ENTRY" (attaches at the entry), or "HALLWAY" (attaches to the circulation hallway that links the public and private zones). Start with the public rooms attached to ENTRY. An ensuite attaches to its bedroom. Bedrooms and shared bathrooms attach to HALLWAY. The kitchen attaches to the living or dining room.
 4. adjacencyPairs: pairs of rooms that must share a wall, e.g. a master bedroom with its ensuite, the kitchen with the dining/living room, wet rooms that can share plumbing.
+
+5. constraints (optional): read the USER REQUIREMENTS above and record only what they actually ask for -- adjacentPairs (rooms the user wants next to each other, e.g. "common bathroom near the second bedroom"), avoidPairs (rooms the user wants kept apart, e.g. "bedrooms away from the kitchen"), placements (a room toward the front/back/left/right of the plot; "front" is the entry side), sharedBathrooms (a bathroom the user calls common/shared/guest, i.e. NOT the master's ensuite), and the flags minimalCorridor, bedroomPrivacy, naturalLight. Leave anything the user did not ask for empty or false. Do not invent requirements.
 
 Allowed room names: ${names}.
 Return JSON only, matching the response schema. No coordinates, sizes, doors or markdown.${previousError ? `

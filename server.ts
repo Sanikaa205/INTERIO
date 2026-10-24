@@ -13,6 +13,10 @@ import {
   TOPOLOGY_RESPONSE_SCHEMA, createTopologyPrompt, validateTopology,
   type TopologyHint, type EntrySide,
 } from './src/services/floorPlanTopology';
+import {
+  parseRequirementsLocally, mergeConstraints, describeConstraints, hasAnyConstraint,
+  type LayoutConstraints, type RelSide,
+} from './src/services/layoutConstraints';
 
 dotenv.config();
 
@@ -242,7 +246,7 @@ export async function generateGeminiContentWithFallback(
         errMsg.includes('UNAVAILABLE') ||
         errMsg.includes('429');
 
-      console.log(`[INTERIO Engine] Model ${model} is busy; rotating to next candidate...`);
+      console.log(`[INTERIO Engine] Model ${model} failed (${errMsg.replace(/\s+/g, ' ').slice(0, 90)}); trying the next candidate...`);
 
       if (isTemporaryDemand) {
         await new Promise((r) => setTimeout(r, 300));
@@ -1760,13 +1764,25 @@ function sizeRoomRect(room: RoomMeta, rng: () => number): { width: number; heigh
   const wideAspectType = isHallway || room.type === 'bathroom' || room.type === 'powder-room';
   const maxAspect = wideAspectType ? 2.2 : 1.6;
   const aspect = 1.0 + rng() * (maxAspect - 1.0);
-  let h = Math.sqrt(room.targetArea / aspect);
-  let w = room.targetArea / h;
-  if (h < minSide) { h = minSide; w = room.targetArea / h; }
-  if (w < minSide) { w = minSide; h = room.targetArea / w; }
+  // Aim ~3% over a user-typed minimum: compaction and 0.1m snapping can shave
+  // a little off a room, and the minimum is a floor, not a target.
+  const area = room.minArea ? Math.max(room.targetArea, room.minArea * 1.03) : room.targetArea;
+  let h = Math.sqrt(area / aspect);
+  let w = area / h;
+  if (h < minSide) { h = minSide; w = area / h; }
+  if (w < minSide) { w = minSide; h = area / w; }
   if (w / h > maxAspect) w = h * maxAspect;
   if (h / w > maxAspect) h = w * maxAspect;
-  return { width: roundPlan(Math.max(minSide, w)), height: roundPlan(Math.max(minSide, h)) };
+  let width = roundPlan(Math.max(minSide, w));
+  let height = roundPlan(Math.max(minSide, h));
+  // Rounding to 0.1m (and the aspect clamps above) can leave the rectangle a
+  // little under its target/minimum area -- a 12 m2 kitchen that comes out
+  // 11.7 m2. Grow the shorter side in 0.1m steps until the area is met.
+  for (let i = 0; i < 40 && width * height < area - 0.001; i++) {
+    if (width <= height) width = roundPlan(width + 0.1);
+    else height = roundPlan(height + 0.1);
+  }
+  return { width, height };
 }
 
 // A handful of flush/centred/bounds-aligned x (or y) offsets to try along
@@ -2090,7 +2106,8 @@ function summarizeRejects(): string {
 function assignDoorsGrowByAttachment(
   rooms: any[], plotW: number, plotL: number,
   masterBedId: string | undefined, suiteOnlyIds: Set<string>,
-  minDoorShared: number = 1.2
+  minDoorShared: number = 1.2,
+  bedroomsHallwayOnly: boolean = false
 ): boolean {
   const groupOf = (r: any): AttachGroup => r._group;
   for (const room of rooms) {
@@ -2098,7 +2115,8 @@ function assignDoorsGrowByAttachment(
     if (suiteOnlyIds.has(room.id)) {
       allowed = masterBedId ? rooms.filter((r) => r.id === masterBedId) : [];
     } else if (room.type === 'bedroom' || room.type === 'master-bedroom') {
-      allowed = rooms.filter((r) => groupOf(r) === 'hallway' || groupOf(r) === 'core');
+      const hasHallway = rooms.some((r) => groupOf(r) === 'hallway');
+      allowed = rooms.filter((r) => groupOf(r) === 'hallway' || (groupOf(r) === 'core' && !(bedroomsHallwayOnly && hasHallway)));
     } else if (room.type === 'bathroom') {
       const hallwayTargets = rooms.filter((r) => groupOf(r) === 'hallway');
       allowed = hallwayTargets.length ? hallwayTargets : rooms.filter((r) => groupOf(r) === 'core');
@@ -2130,7 +2148,15 @@ function assignDoorsGrowByAttachment(
         return overlap >= minDoorShared ? { other, side, overlap } : null;
       })
       .filter((c): c is { other: any; side: 'top' | 'bottom' | 'left' | 'right'; overlap: number } => !!c)
-      .sort((a, b) => b.overlap - a.overlap);
+      .sort((a, b) => {
+        // Bedrooms open onto the hallway before the living areas, whatever the overlap.
+        if (room.type === 'bedroom' || room.type === 'master-bedroom') {
+          const ha = groupOf(a.other) === 'hallway' ? 1 : 0;
+          const hb = groupOf(b.other) === 'hallway' ? 1 : 0;
+          if (ha !== hb) return hb - ha;
+        }
+        return b.overlap - a.overlap;
+      });
 
     if (!candidates.length) {
       const touching = rooms.filter((o) => o !== room && findTouchingSide(room, o)).map((o) => `${o.name}[${groupOf(o)}]`);
@@ -2149,6 +2175,7 @@ function assignDoorsGrowByAttachment(
     const opening = clampOpeningToWall(sharedMid - doorWidth / 2, doorWidth, wallLen, 0.6, 1.1);
     room.doors = [{ side, offset: opening.offset, width: opening.width, swing: 'in' }];
     room.doorSide = side;
+    room.doorTargetId = other.id; // which room this door leads to (used by checks/tests)
   }
 
   // Windows: same "any side facing open air" rule assignOpeningsForLayout
@@ -2184,29 +2211,111 @@ function assignDoorsGrowByAttachment(
 // attaches; it never relaxes aspect caps, door rules or reachability.
 type ResolvedHint = {
   entrySide: EntrySide;
+  hasTopology: boolean; // false when only the user's written constraints are present
   orderIndex: Map<string, number>;
   attachTo: Map<string, string>; // room id -> room id | 'ENTRY' | 'HALLWAY'
-  pairs: [string, string][];
+  pairs: [string, string][]; // soft: the model's suggested pairs
+  strongPairs: [string, string][]; // the user's own "X near Y"
+  avoid: [string, string][];
+  placements: { id: string; side: RelSide }[];
+  sharedBathIds: Set<string>;
+  bedroomPrivacy: boolean;
+  minimalCorridor: boolean;
 };
 
-function resolveTopologyHint(hint: TopologyHint | null | undefined, requested: RoomMeta[]): ResolvedHint | null {
-  if (!hint) return null;
+function resolveTopologyHint(hint: TopologyHint | null | undefined, requested: RoomMeta[], constraints: LayoutConstraints | null = null): ResolvedHint | null {
+  const useConstraints = constraints && hasAnyConstraint(constraints) ? constraints : null;
+  if (!hint && !useConstraints) return null;
   const idOf = (name: string) => requested.find((r) => r.name.trim().toLowerCase() === name.trim().toLowerCase())?.id;
   const orderIndex = new Map<string, number>();
   const attachTo = new Map<string, string>();
-  hint.attachmentOrder.forEach((step, i) => {
+  (hint?.attachmentOrder || []).forEach((step, i) => {
     const id = idOf(step.room);
     if (!id) return;
     orderIndex.set(id, i);
     attachTo.set(id, step.attachTo === 'ENTRY' || step.attachTo === 'HALLWAY' ? step.attachTo : idOf(step.attachTo) || 'HALLWAY');
   });
-  const pairs: [string, string][] = [];
-  for (const p of hint.adjacencyPairs) {
-    const a = idOf(p.a);
-    const b = idOf(p.b);
-    if (a && b) pairs.push([a, b]);
+  const toIdPairs = (list: { a: string; b: string }[] | undefined): [string, string][] => {
+    const out: [string, string][] = [];
+    for (const p of list || []) {
+      const a = idOf(p.a);
+      const b = idOf(p.b);
+      if (a && b) out.push([a, b]);
+    }
+    return out;
+  };
+  const placements: ResolvedHint['placements'] = [];
+  for (const p of useConstraints?.placements || []) {
+    const id = idOf(p.room);
+    if (id) placements.push({ id, side: p.side });
   }
-  return { entrySide: hint.entrySide, orderIndex, attachTo, pairs };
+  const sharedBathIds = new Set<string>();
+  for (const name of useConstraints?.sharedBathrooms || []) { const id = idOf(name); if (id) sharedBathIds.add(id); }
+  return {
+    // A written entry side beats the model's; both default to the street (bottom).
+    entrySide: useConstraints?.entrySide || hint?.entrySide || 'bottom',
+    hasTopology: !!hint,
+    orderIndex, attachTo,
+    pairs: toIdPairs(hint?.adjacencyPairs),
+    strongPairs: toIdPairs(useConstraints?.adjacent),
+    avoid: toIdPairs(useConstraints?.avoid),
+    placements, sharedBathIds,
+    bedroomPrivacy: !!useConstraints?.bedroomPrivacy,
+    minimalCorridor: !!useConstraints?.minimalCorridor,
+  };
+}
+
+// Shared wall length between two rects (0 when they only touch at a corner).
+function sharedWallBetween(a: ZoneRect, b: ZoneRect): number {
+  const side = findTouchingSide(a, b);
+  if (!side) return 0;
+  return side === 'top' || side === 'bottom'
+    ? Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+    : Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+}
+
+// Scores a finished layout against the user's written constraints. Applies to
+// every candidate (hinted or not), so the best candidate is the one that honours
+// the most of what was asked, on top of the solver's own area/aspect scoring.
+function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide, plotW: number, plotL: number): number {
+  let score = 0;
+  const byId = (id: string) => rooms.find((r) => r.id === id);
+  for (const [a, b] of hint.strongPairs) {
+    const ra = byId(a); const rb = byId(b);
+    if (ra && rb) score += sharedWallBetween(ra, rb) >= 1.0 ? 40 : -10;
+  }
+  for (const [a, b] of hint.avoid) {
+    const ra = byId(a); const rb = byId(b);
+    if (ra && rb && sharedWallBetween(ra, rb) >= 0.3) score -= 40;
+  }
+  // front = the entry side of THIS layout, back = the opposite one.
+  const opposite: Record<string, string> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+  for (const p of hint.placements) {
+    const r = byId(p.id);
+    if (!r) continue;
+    const side = p.side === 'front' ? entrySide : p.side === 'back' ? (opposite[entrySide] as EntrySide) : p.side;
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    const inHalf = side === 'top' ? cy < plotL / 2 : side === 'bottom' ? cy > plotL / 2 : side === 'left' ? cx < plotW / 2 : cx > plotW / 2;
+    score += inHalf ? 25 : -8;
+  }
+  const isPublic = (r: any) => r.type === 'living-room' || r.type === 'dining-room' || r.type === 'kitchen' || /foyer|entry/i.test(String(r.name));
+  if (hint.bedroomPrivacy) {
+    for (const bed of rooms.filter((r) => r.type === 'bedroom' || r.type === 'master-bedroom')) {
+      for (const other of rooms.filter(isPublic)) if (sharedWallBetween(bed, other) >= 1.0) score -= 6; // the hard rule is the door (hallway only); a shared wall alone is a mild privacy cost
+    }
+  }
+  if (hint.minimalCorridor) {
+    const hall = rooms.find((r) => r.type === 'hallway' && !/foyer|entry/i.test(String(r.name)));
+    if (hall) score -= hall.width * hall.height * 1.5;
+  }
+  // Natural light is always a mild preference: habitable rooms on an exterior wall.
+  for (const r of rooms.filter((x) => isHabitableRoomType(x.type))) {
+    const neighbors = rooms.filter((o) => o !== r);
+    const open = (['top', 'bottom', 'left', 'right'] as const).some((side) => isRoomSideOpen(r, side, neighbors));
+    score += open ? 3 : -12;
+  }
+  return score;
 }
 
 // Maps a rect from the solver's canonical frame (entry on the bottom edge)
@@ -2221,7 +2330,7 @@ function toRealFrame<T extends { x: number; y: number; width: number; height: nu
 function buildGrowByAttachmentCandidate(
   plotW: number, plotL: number, requested: RoomMeta[],
   prefs: { openPlanKitchen: boolean; masterFarFromEntrance: boolean },
-  rng: () => number, palette: string[], hint: ResolvedHint | null = null
+  rng: () => number, palette: string[], hint: ResolvedHint | null = null, minAreaSlack: number = 0
 ): { rooms: any[]; circulation: { name: string; x: number; y: number; width: number; height: number }[] } | null {
   const edge = 0.3;
   // The solver always works with the entry on the bottom edge. For a hinted
@@ -2253,7 +2362,9 @@ function buildGrowByAttachmentCandidate(
   const kitchen = take((r) => r.type === 'kitchen');
   const masterBed = take((r) => r.type === 'master-bedroom');
   const walkIn = take((r) => r.type === 'utility' && /walk.?in|wardrobe/i.test(r.name));
-  const masterBath = masterBed ? take((r) => r.type === 'bathroom') : undefined;
+  // A bathroom the user called common/shared is never the master's ensuite
+  // (so a single "common bathroom" is placed on the hallway near the other bedrooms).
+  const masterBath = masterBed ? take((r) => r.type === 'bathroom' && !hint?.sharedBathIds.has(r.id)) : undefined;
   const otherBedrooms = takeAll((r) => r.type === 'bedroom');
   const sharedBaths = takeAll((r) => r.type === 'bathroom');
   const laundryUtility = takeAll((r) => r.type === 'laundry' || r.type === 'utility');
@@ -2285,7 +2396,7 @@ function buildGrowByAttachmentCandidate(
   const netPlotArea = bounds.width * bounds.height;
   const hallwayShort = roundPlan(clamp(1.5 + ((netPlotArea - 110) / 90) * 0.6, 1.5, 2.1));
   const hallwayMaxLong = Math.floor(hallwayShort * maxAspectForType('hallway') * 0.98 * 10) / 10; // stays inside the aspect cap
-  const hallwayMinLong = hallwayRoom ? Math.min(hallwayMaxLong, Math.max(3, 1.5 * Math.ceil(hallwayFrontageRooms / 2) + 1.5)) : 3;
+  const hallwayMinLong = hallwayRoom ? Math.min(hallwayMaxLong, Math.max(3, (hint?.minimalCorridor ? 1.35 : 1.5) * Math.ceil(hallwayFrontageRooms / 2) + (hint?.minimalCorridor ? 1.35 : 1.5))) : 3;
   if (hallwayRoom) hallwayRoom.targetArea = Math.max(hallwayRoom.targetArea, hallwayMinLong * hallwayShort);
 
   const targetAreaById = new Map(requested.map((r) => [r.id, r.targetArea]));
@@ -2322,7 +2433,10 @@ function buildGrowByAttachmentCandidate(
   // stranded against other bedrooms/baths.
   const doorTargetsFor = (room: RoomMeta): ((p: any) => boolean) | null => {
     if (room.id === masterBath?.id || room.id === walkIn?.id) return masterBed ? (p) => p.id === masterBed.id : null;
-    if (room.type === 'bedroom' || room.type === 'master-bedroom') return (p) => p._group === 'hallway' || p._group === 'core';
+    if (room.type === 'bedroom' || room.type === 'master-bedroom') {
+      // Bedroom privacy: doors onto the hallway only (never the living areas).
+      return hint?.bedroomPrivacy && hallwayRoom ? (p) => p._group === 'hallway' : (p) => p._group === 'hallway' || p._group === 'core';
+    }
     if (room.type === 'bathroom') return (p) => p._group === 'hallway' || (!hallwayRoom && p._group === 'core');
     return null;
   };
@@ -2392,11 +2506,16 @@ function buildGrowByAttachmentCandidate(
               // Attachment preference + required pairs (bonuses only).
               const wanted = hint.attachTo.get(room.id);
               if (wanted && (wanted === anchor.id || (wanted === 'HALLWAY' && anchor._group === 'hallway') || (wanted === 'ENTRY' && anchor._group === 'core'))) score += 25;
-              for (const [a, b] of hint.pairs) {
-                const partnerId = a === room.id ? b : b === room.id ? a : null;
-                const partner = partnerId ? placed.find((p) => p.id === partnerId) : null;
-                if (partner && findTouchingSide(candidateRect, partner)) score += 20;
-              }
+              const pairBonus = (list: [string, string][], bonus: number) => {
+                for (const [a, b] of list) {
+                  const partnerId = a === room.id ? b : b === room.id ? a : null;
+                  const partner = partnerId ? placed.find((p) => p.id === partnerId) : null;
+                  if (partner && findTouchingSide(candidateRect, partner)) score += bonus;
+                }
+              };
+              pairBonus(hint.pairs, 20);
+              pairBonus(hint.strongPairs, 35);
+              pairBonus(hint.avoid, -35);
             }
             legal.push({ x, y, score });
           }
@@ -2458,7 +2577,7 @@ function buildGrowByAttachmentCandidate(
   // the master (its only legal door target), so the hint can never make a
   // candidate impossible by itself -- and if the DFS can't satisfy it, the
   // caller falls back to the solver's own order.
-  if (hint) {
+  if (hint && hint.hasTopology) {
     const fixed = steps.filter((st) => st.group === 'core' || st.group === 'hallway');
     const rest = steps.filter((st) => !(st.group === 'core' || st.group === 'hallway'));
     const idx = (st: Step) => hint.orderIndex.get(st.room.id) ?? 1000;
@@ -2497,11 +2616,42 @@ function buildGrowByAttachmentCandidate(
       leafFail = { gate: 'void', reason: voids.map((v) => `area=${(v.length * 0.04).toFixed(2)}m2 at cell(${Math.min(...v.map((c) => c.x))},${Math.min(...v.map((c) => c.y))})`).join('; ') };
       return false;
     }
+    // Compaction (edge alignment, gap closing, void filling) can stretch a room
+    // past its aspect cap even though it was sized within it -- reject, don't ship.
+    const stretched = arr.filter((r) => !respectsAspectCap(r));
+    if (stretched.length) {
+      leafFail = { gate: 'aspect', reason: stretched.map((r) => `${r.name} ${r.width}x${r.height}`).join('; ') };
+      return false;
+    }
+    // The user's minimum area is a minimum: compaction (edge alignment, gap
+    // closing) and 0.1m snapping can shave a room below it, so check last.
+    const undersized = arr.filter((r) => {
+      const min = requested.find((q) => q.id === r.id)?.minArea;
+      return !!min && r.width * r.height < min * (1 - minAreaSlack) - 0.05;
+    });
+    if (undersized.length) {
+      leafFail = { gate: 'minarea', reason: undersized.map((r) => `${r.name} ${(r.width * r.height).toFixed(1)}m2 < min ${requested.find((q) => q.id === r.id)?.minArea}m2`).join('; ') };
+      return false;
+    }
+    // The user's own "X near Y" / "X away from Y" are enforced here, so the
+    // search backtracks to an arrangement that satisfies them; when none can,
+    // the caller falls back to the solver's own order (soft score only).
+    if (hint) {
+      const at = (id: string) => arr.find((r) => r.id === id);
+      for (const [x, y] of hint.strongPairs) {
+        const rx = at(x); const ry = at(y);
+        if (rx && ry && sharedWallBetween(rx, ry) < 1.0) { leafFail = { gate: 'pair', reason: `${rx.name} not next to ${ry.name}` }; return false; }
+      }
+      for (const [x, y] of hint.avoid) {
+        const rx = at(x); const ry = at(y);
+        if (rx && ry && sharedWallBetween(rx, ry) >= 0.3) { leafFail = { gate: 'pair', reason: `${rx.name} touches ${ry.name}` }; return false; }
+      }
+    }
     const rooms: any[] = arr.map((r) => ({ ...toRealFrame(r, entrySide, solverL), area: roundPlan(r.width * r.height), adjacentTo: [] }));
     const circulation: Finished['circulation'] = [];
     rejectStats.capture = true;
     rejectStats.captured = null;
-    const doorsOk = assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds, doorMinShared - 0.1);
+    const doorsOk = assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds, doorMinShared - 0.1, !!hint?.bedroomPrivacy);
     rejectStats.capture = false;
     if (!doorsOk) { leafFail = rejectStats.captured || { gate: 'doors', reason: 'door assignment failed' }; return false; }
     const unreachable = findUnreachableRooms(rooms, circulation, plotW, plotL);
@@ -2546,25 +2696,38 @@ function buildGrowByAttachmentCandidate(
 // ----------------------------------------------------
 // AI topology -> deterministic solver
 // ----------------------------------------------------
-export type TopologyModelCaller = (prompt: string) => Promise<string>;
+export type TopologyCallContext = { attempt: number; previousWasApiError: boolean };
+export type TopologyModelCaller = (prompt: string, ctx?: TopologyCallContext) => Promise<string>;
 
-// Default caller: one fast model, short timeout, structured output. The
-// topology reply is tiny, so the lite model answers in a couple of seconds.
+// Default caller: a fast model, structured output. The first try uses the
+// primary model; if that try failed at the API (timeout / 429 / 503) the
+// second goes to a DIFFERENT model -- retrying the model that just timed out
+// mostly wastes another timeout. A validation failure retries the same model
+// (it answered; it just needs the error spelled out).
+const TOPOLOGY_MODELS = () => [
+  process.env.GEMINI_TOPOLOGY_MODEL || 'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+];
+const TOPOLOGY_TIMEOUT_MS = 7000;
+
 function defaultTopologyCaller(): TopologyModelCaller | null {
   const ai = getGeminiClient();
   if (!ai) return null;
-  const model = process.env.GEMINI_TOPOLOGY_MODEL || 'gemini-3.5-flash-lite';
-  return (prompt) => generateGeminiContentWithFallback(ai, prompt, {
-    temperature: 0.1,
-    responseMimeType: 'application/json',
-    responseJsonSchema: TOPOLOGY_RESPONSE_SCHEMA,
-    attempts: [{ model, timeoutMs: 6000 }],
-  });
+  return (prompt, ctx) => {
+    const models = TOPOLOGY_MODELS();
+    const model = ctx?.previousWasApiError ? models[Math.min((ctx.attempt - 1), models.length - 1)] : models[0];
+    return generateGeminiContentWithFallback(ai, prompt, {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      responseJsonSchema: TOPOLOGY_RESPONSE_SCHEMA,
+      attempts: [{ model, timeoutMs: TOPOLOGY_TIMEOUT_MS }],
+    });
+  };
 }
 
 // Asks the model for a topology hint: one try, then one retry with the
-// failure (API error or schema/program validation error) in the prompt.
-// Never throws; returns hint=null when both tries fail.
+// failure in the prompt (a validation error) or on another model (an API
+// error). Never throws; returns hint=null when both tries fail.
 export async function requestTopologyHint(params: {
   plotW: number; plotL: number; rooms: any[]; userRequirements: string; callModel?: TopologyModelCaller | null;
 }): Promise<{ hint: TopologyHint | null; attempts: number; errors: string[] }> {
@@ -2582,35 +2745,64 @@ export async function requestTopologyHint(params: {
   }));
 
   let previousError: string | undefined;
+  let previousWasApiError = false;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const text = await callModel(createTopologyPrompt(params.plotW, params.plotL, program, params.userRequirements, previousError));
+      // After an API error there is no validation error to report back.
+      const text = await callModel(
+        createTopologyPrompt(params.plotW, params.plotL, program, params.userRequirements, previousWasApiError ? undefined : previousError),
+        { attempt, previousWasApiError },
+      );
       const verdict = validateTopology(parseJsonResponse(text), program);
       if (verdict.ok) return { hint: verdict.hint, attempts: attempt, errors };
       previousError = (verdict as { ok: false; error: string }).error;
+      previousWasApiError = false;
     } catch (err: any) {
-      previousError = `the reply could not be used (${String(err?.message || err).slice(0, 160)})`;
+      const message = String(err?.message || err);
+      previousWasApiError = !/JSON|Unexpected token|is not valid/i.test(message);
+      previousError = `the reply could not be used (${message.slice(0, 160)})`;
     }
-    errors.push(previousError);
+    errors.push(previousError!);
     if (process.env.DEBUG_LAYOUT) console.error(`[topology] attempt ${attempt} failed: ${previousError}`);
   }
   return { hint: null, attempts: 2, errors };
 }
 
+// Gemini's latency is hidden behind the solver run, but it must not hold the
+// response hostage: after the solver pass we wait only up to this long overall.
+const TOPOLOGY_DEADLINE_MS = 9000;
+
 export async function generateFloorPlanWithTopology(params: {
   plotW: number; plotL: number; rooms: any[]; userRequirements?: string; variationSeed?: string; callModel?: TopologyModelCaller | null;
 }) {
+  const startedAt = Date.now();
   const requirements = params.userRequirements || '';
   const seed = params.variationSeed || '';
+
+  // What the user wrote, read locally -- no network, so a Gemini outage never
+  // discards the description. Gemini's own reading (if it arrives) is merged in.
+  const types = normalizeRoomTypes(params.rooms);
+  const program = params.rooms.map((r: any, i: number) => ({ name: String(r.name || `Room ${i + 1}`).slice(0, 80), type: types[i] }));
+  const localConstraints = parseRequirementsLocally(requirements, program);
+
   // Start the model request first, then run the full solver while it is in
   // flight (the request is I/O, the solver is CPU), so Gemini's latency is
-  // hidden behind the solver's. The solver-alone plan is both the fallback
-  // and the baseline the hinted plan has to beat.
+  // hidden behind the solver's. The solver-alone plan (with the locally
+  // parsed constraints) is both the fallback and the baseline to beat.
   const topologyRequest = requestTopologyHint({
     plotW: params.plotW, plotL: params.plotL, rooms: params.rooms, userRequirements: requirements, callModel: params.callModel,
   });
-  const solverPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed);
-  const { hint, attempts, errors } = await topologyRequest;
+  const solverPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, null, 60, localConstraints);
+
+  const waitMs = Math.max(0, TOPOLOGY_DEADLINE_MS - (Date.now() - startedAt));
+  const timedOut = Symbol('timeout');
+  const outcome: any = await Promise.race([
+    topologyRequest,
+    new Promise((resolve) => setTimeout(() => resolve(timedOut), waitMs)),
+  ]);
+  const { hint, attempts, errors } = outcome === timedOut
+    ? { hint: null as TopologyHint | null, attempts: 1, errors: [`no reply within ${Math.round(TOPOLOGY_DEADLINE_MS / 1000)}s`] }
+    : outcome as { hint: TopologyHint | null; attempts: number; errors: string[] };
   if (!hint && errors.length) console.warn(`[INTERIO Layout] Gemini topology unavailable (${errors[errors.length - 1]}); using the solver alone.`);
 
   let plan = solverPlan;
@@ -2619,7 +2811,8 @@ export async function generateFloorPlanWithTopology(params: {
     // order narrows the search); keep it only if it solves and scores at
     // least as well. A hinted candidate that can't be satisfied falls back to
     // the solver's own order inside the pass.
-    const hintedPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, hint, 16);
+    const merged = mergeConstraints(localConstraints, hint.constraints);
+    const hintedPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, hint, 16, merged);
     if (!hintedPlan.constraintError && (solverPlan.constraintError || hintedPlan.layoutScore >= solverPlan.layoutScore)) plan = hintedPlan;
   }
   return { ...plan, topologyHintUsed: !!hint && plan.layoutSource === 'topology-hinted', topologyHintReceived: !!hint, topologyAttempts: attempts, topologyErrors: errors };
@@ -2651,7 +2844,7 @@ function normalizeRoomTypes(rooms: any[]): string[] {
   return types;
 }
 
-export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[], userRequirements: string = '', variationSeed: string = '', probeOnly: boolean = false, topologyHint: TopologyHint | null = null, candidateCount: number = 60) {
+export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[], userRequirements: string = '', variationSeed: string = '', probeOnly: boolean = false, topologyHint: TopologyHint | null = null, candidateCount: number = 60, constraints: LayoutConstraints | null = null) {
   const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
   const plotArea = plotW * plotL;
   const rawRequested = requestedRooms.length ? requestedRooms : [
@@ -2666,6 +2859,7 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
     name: String(room.name || `Room ${index + 1}`).slice(0, 80),
     type: normalizedTypes[index],
     targetArea: deriveTargetArea(normalizedTypes[index], Number(room.minSize), plotArea, rawRequested.length),
+    minArea: Number(room.minSize) > 0 ? Number(room.minSize) : undefined,
   }));
 
   // A building needs its own circulation to read as one connected mass --
@@ -2715,20 +2909,32 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
   // mismatched container aspect ratio. Run at least 40 randomised
   // orderings/sizings and keep the best-scoring one.
   let best: { rooms: any[]; circulation: any[]; score: number; hinted?: boolean } | null = null;
-  const resolvedHint = resolveTopologyHint(topologyHint, requested);
+  const resolvedHint = resolveTopologyHint(topologyHint, requested, constraints);
   let hintedPassed = 0;
   const GROW_CANDIDATE_COUNT = candidateCount;
-  rejectStats.byGate.clear(); rejectStats.byReason.clear();
   let growPassed = 0;
+  // The user's minimum areas are enforced strictly first. Only when NO layout
+  // can honour them on this plot do we allow a small shortfall (6%, then 12%),
+  // and the plan says which rooms came out under their minimum.
+  let usedSlack = 0;
+  for (const minAreaSlack of probeOnly ? [0, 0.06] : [0, 0.06, 0.12]) {
+  usedSlack = minAreaSlack;
+  rejectStats.byGate.clear(); rejectStats.byReason.clear();
+  growPassed = 0; hintedPassed = 0;
   for (let i = 0; i < GROW_CANDIDATE_COUNT; i++) {
     const candidateSeed = hashSeed(`${seedStr}|grow|${i}`) ^ Math.floor(baseRng() * 0xffffffff);
     const candidateRng = mulberry32(candidateSeed >>> 0);
     rejectStats.cand = i;
     // Try the topology-hinted order first; if the DFS cannot satisfy it, fall
     // back to the solver's own order for this same candidate (same seed).
-    let built = resolvedHint ? buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, candidateRng, palette, resolvedHint) : null;
+    let built = resolvedHint ? buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, candidateRng, palette, resolvedHint, minAreaSlack) : null;
+    if (!built && resolvedHint?.bedroomPrivacy) {
+      // Same hint without the hard "bedroom doors on the hallway only" rule
+      // (doors still prefer the hallway; privacy stays a scoring preference).
+      built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, { ...resolvedHint, bedroomPrivacy: false }, minAreaSlack);
+    }
     const hinted = !!built;
-    if (!built) built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette);
+    if (!built) built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, null, minAreaSlack);
     if (!built) continue;
     const { rooms, circulation } = built;
     if (!isCandidateValid(rooms, circulation, plotW, plotL)) {
@@ -2751,10 +2957,13 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
         if (ra && rb && findTouchingSide(ra, rb)) score += 8;
       }
       if (hinted) score += 6;
+      score += scoreConstraints(rooms, resolvedHint, hinted ? resolvedHint.entrySide : 'bottom', plotW, plotL);
     }
     growPassed++;
     if (hinted) hintedPassed++;
     if (!best || score > best.score) best = { rooms, circulation, score, hinted };
+  }
+  if (best) break;
   }
   if (process.env.DEBUG_LAYOUT && !probeOnly) console.error(`[grow-summary] passed=${growPassed}/${GROW_CANDIDATE_COUNT} hinted=${hintedPassed}\n${summarizeRejects()}`);
   if (process.env.DEBUG_LAYOUT) console.error(`[after-grow-loop] best=${best ? best.score.toFixed(1) : 'null'}`);
@@ -2823,6 +3032,12 @@ ${allowLegacyFallback ? 'INTERIO_LEGACY_FALLBACK=1: falling back to the legacy c
     if (f) console.error(`[FINAL] Foyer w=${f.width} h=${f.height} score=${best.score.toFixed(1)}`);
   }
   const { rooms, circulation } = best;
+  const shortfalls = rooms
+    .map((r: any) => ({ name: r.name, area: roundPlan(r.width * r.height), min: requested.find((q) => q.id === r.id)?.minArea }))
+    .filter((x: any) => x.min && x.area < x.min - 0.05);
+  const shortfallNote = shortfalls.length
+    ? ` Tight plot: ${shortfalls.map((x: any) => `${x.name} is ${x.area} m² (your minimum ${x.min} m²)`).join('; ')} -- no layout on this plot met every minimum.`
+    : '';
   const edge = 0.3;
   const clearWidth = Math.max(1.8, plotW - edge * 2);
   const clearLength = Math.max(1.8, plotL - edge * 2);
@@ -2854,11 +3069,13 @@ ${allowLegacyFallback ? 'INTERIO_LEGACY_FALLBACK=1: falling back to the legacy c
     totalBuiltArea,
     openSpaceArea: roundPlan(Math.max(0, plotArea - totalBuiltArea)),
     architecturalStyle: 'Zoned Residential Plan',
-    designNotes: `Rooms are grouped into public and private zones and sized from their target areas within the ${roundPlan(netArea)} m² net envelope of the measured ${roundPlan(plotArea)} m² plot.${zoningNote}${constraintNote}`,
+    designNotes: `Rooms are grouped into public and private zones and sized from their target areas within the ${roundPlan(netArea)} m² net envelope of the measured ${roundPlan(plotArea)} m² plot.${zoningNote}${constraintNote}${shortfallNote}${constraints ? ' ' + describeConstraints(constraints) : ''}`,
     circulation,
     rooms,
     layoutSource: best.hinted ? 'topology-hinted' : 'solver',
     layoutScore: best.score,
+    minAreaShortfalls: shortfalls,
+    requirementsReport: constraints ? { applied: constraints.applied, notApplied: constraints.notApplied } : undefined,
     constraintError: minimumIssue
       ? `The ${plotW}m × ${plotL}m plot cannot accommodate all requested rooms with the minimum practical room dimensions and circulation clearance. Reduce room sizes/count or increase the plot dimensions.`
       : undefined,
@@ -2990,7 +3207,7 @@ function splitPlotIntoZones(
 }
 
 type ZoneRect = { x: number; y: number; width: number; height: number };
-type RoomMeta = { id: string; name: string; type: string; targetArea: number };
+type RoomMeta = { id: string; name: string; type: string; targetArea: number; minArea?: number };
 
 // Pairs rooms that must end up sharing a wall: each bedroom (master first)
 // with the next unclaimed bathroom (its ensuite), and the kitchen with the
