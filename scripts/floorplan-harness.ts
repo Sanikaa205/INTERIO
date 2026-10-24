@@ -42,6 +42,18 @@ async function main() {
   for (const plot of plots) for (let i = 0; i < N; i++) jobs.push({ plot, i });
   const results: any[] = [];
 
+  // Checkpointing: every finished job is appended to a JSONL file, so a run can
+  // be stopped at any time (Ctrl+C / kill) and resumed later by re-running the
+  // same command. HARNESS_FRESH=1 ignores and replaces an existing checkpoint.
+  const checkpoint = `scripts/harness-results/${mode}-checkpoint.jsonl`;
+  if (process.env.HARNESS_FRESH === '1' && fs.existsSync(checkpoint)) fs.unlinkSync(checkpoint);
+  if (fs.existsSync(checkpoint)) {
+    for (const line of fs.readFileSync(checkpoint, 'utf8').split('
+').filter(Boolean)) results.push(JSON.parse(line));
+    realError(`resuming: ${results.length} of ${jobs.length} jobs already done`);
+  }
+  const doneKeys = new Set(results.map((r) => `${r.plot}#${r.i}`));
+
   async function runJob({ plot: [w, l], i }: { plot: [number, number]; i: number }) {
     const t0 = Date.now();
     const rec: any = { plot: `${w}x${l}`, i, accepted: false, reason: null as string | null };
@@ -85,6 +97,8 @@ async function main() {
     }
     rec.latencyMs = Date.now() - t0;
     results.push(rec);
+    fs.appendFileSync(checkpoint, JSON.stringify(rec) + '
+');
     realError(`${rec.plot} #${rec.i} ${rec.accepted ? 'OK' : 'REJECT'} ${rec.latencyMs}ms ${rec.reason ? '- ' + String(rec.reason).slice(0, 90) : ''}`);
   }
 
@@ -93,7 +107,7 @@ async function main() {
   // The free Gemini tier is rate-limited per minute, so pace network modes (the sleep is outside the timed region).
   const minIntervalMs = Number(process.env.HARNESS_MIN_INTERVAL_MS ?? (mode === 'solver' ? 0 : 6000));
   let lastStart = 0;
-  const queue = [...jobs];
+  const queue = jobs.filter((j) => !doneKeys.has(`${j.plot[0]}x${j.plot[1]}#${j.i}`));
   await Promise.all(Array.from({ length: conc }, async () => {
     while (queue.length) {
       const job = queue.shift()!;
@@ -119,6 +133,7 @@ async function main() {
   const out = { mode, N, concurrency: conc, program: 'UI default (FloorPlanWorkflow.tsx)', at: new Date().toISOString(), summary, results };
   const file = `scripts/harness-results/${mode}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   fs.writeFileSync(file, JSON.stringify(out, null, 2));
+  if (fs.existsSync(checkpoint)) fs.unlinkSync(checkpoint);
   console.log(JSON.stringify(summary, null, 2));
   console.log('saved', file);
   process.exit(0);
