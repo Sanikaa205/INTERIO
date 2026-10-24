@@ -14,6 +14,9 @@ import { RoomLabels } from './RoomLabels';
 import { Lighting } from './Lighting';
 import { Toolbar } from './Toolbar';
 import { exportHouseGlb } from './exportGlb';
+import { Walkthrough } from './Walkthrough';
+import { VirtualJoystick } from './VirtualJoystick';
+import { useWalkInput, type WalkInput } from './useWalkInput';
 
 interface FloorPlan3DProps {
   plan: FloorPlanResult;
@@ -37,6 +40,10 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   const [focusedRoomId, setFocusedRoomId] = useState<string | null>(null);
   const [resetToken, setResetToken] = useState(0);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'orbit' | 'walk'>('orbit');
+  const [showWalkHint, setShowWalkHint] = useState(false);
+  const inputRef = useRef<WalkInput>({ forward: 0, strafe: 0, run: false });
+  const orbitSettings = useRef({ ceilings: false, cutaway: false });
   const houseRef = useRef<THREE.Group>(null);
   const model = useMemo(() => buildHouseModel(plan), [plan]);
   const resetView = () => {
@@ -51,6 +58,20 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
     } catch {
       setExportError('Unable to export the floor plan. Please try again.');
     }
+  };
+  useWalkInput(inputRef, mode === 'walk');
+  const enterWalk = () => {
+    orbitSettings.current = { ceilings: showCeilings, cutaway };
+    setShowCeilings(true);
+    setCutaway(false);
+    setShowWalkHint(true);
+    setMode('walk');
+    window.setTimeout(() => setShowWalkHint(false), 4000);
+  };
+  const exitWalk = () => {
+    setMode('orbit');
+    setShowCeilings(orbitSettings.current.ceilings);
+    setCutaway(orbitSettings.current.cutaway);
   };
   return (
     <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
@@ -115,7 +136,12 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
           onNight={() => setNight((value) => !value)}
           onReset={resetView}
           onExport={exportGlb}
+          mode={mode}
+          onWalk={enterWalk}
+          onExitWalk={exitWalk}
         />
+        {mode === 'walk' && showWalkHint && <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 rounded-lg bg-stone-900/85 px-4 py-2 text-center text-xs text-white pointer-events-none">WASD to move · drag/mouse to look · Esc to exit</div>}
+        {mode === 'walk' && <VirtualJoystick inputRef={inputRef} />}
         {exportError && <div className="absolute bottom-3 left-3 z-10 rounded bg-red-900/90 px-3 py-1.5 text-xs text-red-100">{exportError}</div>}
         <Canvas camera={{ fov: 50 }} onPointerMissed={resetView}>
           <color attach="background" args={[night ? '#07101f' : '#b9d9f2']} />
@@ -128,7 +154,8 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
             {showCeilings && <Ceilings model={model} />}
           </group>
           {showLabels && <RoomLabels model={model} />}
-          <CameraRig model={model} focusedRoomId={focusedRoomId} resetToken={resetToken} />
+          <CameraRig model={model} focusedRoomId={focusedRoomId} resetToken={resetToken} enabled={mode === 'orbit'} />
+          {mode === 'walk' && <Walkthrough model={model} inputRef={inputRef} onExit={exitWalk} />}
         </Canvas>
       </div>
     </div>

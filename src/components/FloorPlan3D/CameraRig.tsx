@@ -10,9 +10,10 @@ interface CameraRigProps {
   model: HouseModel;
   focusedRoomId: string | null;
   resetToken: number;
+  enabled?: boolean;
 }
 
-export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, resetToken }) => {
+export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, resetToken, enabled = true }) => {
   const controls = useRef<React.ElementRef<typeof OrbitControls>>(null);
   const { camera, size, invalidate } = useThree();
   const target = useRef(new THREE.Vector3());
@@ -73,6 +74,7 @@ export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, rese
 
   return (
     <OrbitControls
+      enabled={enabled}
       ref={controls}
       makeDefault
       minDistance={fit.minDistance}
