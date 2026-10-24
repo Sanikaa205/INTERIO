@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
-import { ArrowLeft, BookmarkPlus, Home, Layers } from 'lucide-react';
+import * as THREE from 'three';
+import { ArrowLeft, BookmarkPlus, Home } from 'lucide-react';
 import { FloorPlanResult } from '../../types';
 import { buildHouseModel } from './model/buildHouseModel';
 import { Floors } from './Floors';
@@ -9,7 +9,11 @@ import { Walls } from './Walls';
 import { Doors } from './Doors';
 import { Windows } from './Windows';
 import { Ceilings } from './Ceilings';
-import { WALL_HEIGHT } from './model/constants';
+import { CameraRig } from './CameraRig';
+import { RoomLabels } from './RoomLabels';
+import { Lighting } from './Lighting';
+import { Toolbar } from './Toolbar';
+import { exportHouseGlb } from './exportGlb';
 
 interface FloorPlan3DProps {
   plan: FloorPlanResult;
@@ -27,8 +31,27 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   onSaveProject,
 }) => {
   const [showCeilings, setShowCeilings] = useState(false);
+  const [cutaway, setCutaway] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
+  const [night, setNight] = useState(false);
+  const [focusedRoomId, setFocusedRoomId] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const houseRef = useRef<THREE.Group>(null);
   const model = useMemo(() => buildHouseModel(plan), [plan]);
-  const center = [(model.bounds.minX + model.bounds.maxX) / 2, 0, (model.bounds.minZ + model.bounds.maxZ) / 2] as [number, number, number];
+  const resetView = () => {
+    setFocusedRoomId(null);
+    setResetToken((value) => value + 1);
+  };
+  const exportGlb = async () => {
+    if (!houseRef.current) return;
+    try {
+      setExportError(null);
+      await exportHouseGlb(houseRef.current);
+    } catch {
+      setExportError('Unable to export the floor plan. Please try again.');
+    }
+  };
   return (
     <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
       {/* Top Floating Control Bar */}
@@ -68,15 +91,6 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
         {/* Right: Save */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
           <button
-            id="btn-fp3d-ceiling"
-            onClick={() => setShowCeilings((visible) => !visible)}
-            className="px-3 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-200 text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-colors border border-stone-800"
-            title="Toggle ceiling"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Ceiling</span>
-          </button>
-          <button
             id="btn-fp3d-save"
             onClick={onSaveProject}
             className="px-3 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-200 text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-colors border border-stone-800"
@@ -89,16 +103,32 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
       </div>
 
       {/* 3D Canvas */}
-      <div className="w-full h-full rounded-lg">
-        <Canvas camera={{ position: [model.plotWidth, WALL_HEIGHT * 2.5, model.plotDepth], fov: 50 }}>
-          <ambientLight intensity={0.65} />
-          <directionalLight position={[model.plotWidth, WALL_HEIGHT * 3, model.plotDepth]} intensity={1.2} />
-          <Floors model={model} />
-          <Walls model={model} />
-          <Doors model={model} />
-          <Windows model={model} />
-          {showCeilings && <Ceilings model={model} />}
-          <OrbitControls target={center} makeDefault />
+      <div className="relative w-full h-full rounded-lg">
+        <Toolbar
+          showCeilings={showCeilings}
+          cutaway={cutaway}
+          labels={showLabels}
+          night={night}
+          onCeilings={() => setShowCeilings((visible) => !visible)}
+          onCutaway={() => setCutaway((visible) => !visible)}
+          onLabels={() => setShowLabels((visible) => !visible)}
+          onNight={() => setNight((value) => !value)}
+          onReset={resetView}
+          onExport={exportGlb}
+        />
+        {exportError && <div className="absolute bottom-3 left-3 z-10 rounded bg-red-900/90 px-3 py-1.5 text-xs text-red-100">{exportError}</div>}
+        <Canvas camera={{ fov: 50 }} onPointerMissed={resetView}>
+          <color attach="background" args={[night ? '#07101f' : '#b9d9f2']} />
+          <Lighting model={model} night={night} />
+          <group ref={houseRef} onClick={(event) => event.stopPropagation()}>
+            <Floors model={model} focusedRoomId={focusedRoomId} onFocus={setFocusedRoomId} onClearFocus={resetView} />
+            <Walls model={model} cutaway={cutaway} />
+            <Doors model={model} />
+            <Windows model={model} />
+            {showCeilings && <Ceilings model={model} />}
+          </group>
+          {showLabels && <RoomLabels model={model} />}
+          <CameraRig model={model} focusedRoomId={focusedRoomId} resetToken={resetToken} />
         </Canvas>
       </div>
     </div>
