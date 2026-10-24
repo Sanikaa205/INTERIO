@@ -219,7 +219,16 @@ export async function generateInteriorApi(params: {
     const err = await res.json().catch(() => ({ error: 'Failed to generate interior design' }));
     throw new Error(err.error || 'Failed to generate interior design. Please try again.');
   }
-  return res.json();
+  const result = await res.json() as InteriorDesignResult;
+  const normalize = (value: unknown) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (normalize(result.roomType) !== normalize(params.roomType)) {
+    throw new Error(`The layout service returned a ${result.roomType || 'different'} room for the selected ${params.roomType}. Please regenerate the plan.`);
+  }
+  if (result.style !== params.style || result.roomWidth !== params.roomWidth || result.roomLength !== params.roomLength) {
+    throw new Error('The layout service returned stale design settings. Please regenerate the plan.');
+  }
+  if (!Array.isArray(result.furniture)) throw new Error('The layout service returned no furniture layout. Please try again.');
+  return result;
 }
 
 export async function reconstructRoomApi(params: {

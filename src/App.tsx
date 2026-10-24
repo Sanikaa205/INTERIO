@@ -164,7 +164,7 @@ export default function App() {
   const handleViewInterior3D = (result: InteriorDesignResult) => {
     setActive3DData(result);
     setActive3DType('interior');
-    setActive3DTitle(`${result.style} Interior Scheme`);
+    setActive3DTitle(`${result.roomType} · ${result.style} Interior`);
     setActiveTab('3d-studio');
   };
 

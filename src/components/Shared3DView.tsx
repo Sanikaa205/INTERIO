@@ -4,6 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createFloorMaterial, createFurnitureModel, addStyledDecor } from '../three/interiorVisuals';
+import { defaultRoomOpenings } from '../services/layoutOptimizer';
 import {
   FloorPlanResult,
   FurnitureItem,
@@ -543,123 +544,10 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         // each wall gets its own material instance so updateCameraFacingWallOpacity()
         // can independently fade whichever one still faces the camera in
         // "Interior" shell view (e.g. while wallShellMode is 'enclosed').
-        const northGroup = new THREE.Group();
-        const southGroup = new THREE.Group();
-        const eastGroup = new THREE.Group();
-        const westGroup = new THREE.Group();
-        scene.add(northGroup, southGroup, eastGroup, westGroup);
-        wallGroupsRef.current = { north: northGroup, south: southGroup, east: eastGroup, west: westGroup };
-
-        // North wall: real window opening.
-        const windowW = Math.min(1.7, roomW * 0.42);
-        const windowBottom = 0.88;
-        const windowTop = Math.min(2.15, wallHeight - 0.25);
-        const windowH = windowTop - windowBottom;
-        const sideW = (roomW - windowW) / 2;
-        const northZ = -roomL / 2;
-        const northMat = wallMat.clone();
-        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(0, 0, -1), material: northMat });
-        createWallSegment(northGroup, sideW, wallThick, wallHeight, -(windowW + sideW) / 2, wallHeight / 2, northZ, northMat, true);
-        createWallSegment(northGroup, sideW, wallThick, wallHeight, (windowW + sideW) / 2, wallHeight / 2, northZ, northMat, true);
-        createWallSegment(northGroup, windowW, wallThick, windowBottom, 0, windowBottom / 2, northZ, northMat, true);
-        createWallSegment(northGroup, windowW, wallThick, Math.max(0.1, wallHeight - windowTop), 0, windowTop + Math.max(0.1, wallHeight - windowTop) / 2, northZ, northMat, true);
-        const outdoorGlow = new THREE.Mesh(
-          new THREE.BoxGeometry(windowW - 0.1, windowH - 0.1, 0.025),
-          new THREE.MeshStandardMaterial({ color: '#bacbc9', emissive: '#71827b', emissiveIntensity: 0.16, roughness: 0.88 })
-        );
-        outdoorGlow.position.set(0, windowBottom + windowH / 2, northZ - 0.015);
-        northGroup.add(outdoorGlow);
-        const glass = new THREE.MeshStandardMaterial({ color: '#b9d5dd', roughness: 0.16, metalness: 0.12, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
-        const windowPane = new THREE.Mesh(new THREE.BoxGeometry(windowW - 0.12, windowH - 0.12, 0.035), glass);
-        windowPane.position.set(0, windowBottom + windowH / 2, northZ + 0.075);
-        northGroup.add(windowPane);
-        const frameMat = new THREE.MeshStandardMaterial({ color: '#f5f1e8', roughness: 0.56 });
-        const frameDepth = 0.07;
-        for (const x of [-windowW / 2, 0, windowW / 2]) createWallSegment(northGroup, 0.055, frameDepth, windowH + 0.06, x, windowBottom + windowH / 2, northZ + 0.08, frameMat);
-        for (const y of [windowBottom, windowTop]) createWallSegment(northGroup, windowW + 0.06, frameDepth, 0.055, 0, y, northZ + 0.08, frameMat);
-
-        // West wall: door aperture and a slightly ajar slab.
-        const doorW = Math.min(0.92, roomL * 0.22);
-        const doorH = Math.min(2.15, wallHeight - 0.2);
-        const doorZ = Math.min(roomL / 2 - doorW / 2 - 0.32, 0.85);
-        const westX = -roomW / 2;
-        const doorStart = doorZ - doorW / 2;
-        const doorEnd = doorZ + doorW / 2;
-        const westSegment = (roomL - doorW) / 2;
-        const westMat = wallMat.clone();
-        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(-1, 0, 0), material: westMat });
-        createWallSegment(westGroup, wallThick, westSegment, wallHeight, westX, wallHeight / 2, -doorZ - doorW / 2 - westSegment / 2, westMat, true);
-        createWallSegment(westGroup, wallThick, westSegment, wallHeight, westX, wallHeight / 2, doorZ + doorW / 2 + westSegment / 2, westMat, true);
-        createWallSegment(westGroup, wallThick, doorW, wallHeight - doorH, westX, doorH + (wallHeight - doorH) / 2, doorZ, westMat, true);
-        const doorGroup = new THREE.Group();
-        const doorMat = new THREE.MeshStandardMaterial({ color: interiorData.colorPalette?.find((swatch) => swatch.role === 'secondary')?.hex || '#a7835e', roughness: 0.62 });
-        const door = new THREE.Mesh(new THREE.BoxGeometry(0.055, doorH - 0.03, doorW - 0.04), doorMat);
-        door.position.set(0.08, (doorH - 0.03) / 2, doorW / 2);
-        doorGroup.add(door);
-        doorGroup.position.set(westX + 0.08, 0, doorZ - doorW / 2);
-        doorGroup.rotation.y = -0.22;
-        westGroup.add(doorGroup);
-        // Door jambs and lintel share the same aperture measurements as the
-        // surrounding wall sections, keeping frame and opening aligned.
-        const doorFrameMat = new THREE.MeshStandardMaterial({ color: '#f2eee6', roughness: 0.58 });
-        createWallSegment(westGroup, 0.07, 0.07, doorH, westX + 0.12, doorH / 2, doorStart, doorFrameMat);
-        createWallSegment(westGroup, 0.07, 0.07, doorH, westX + 0.12, doorH / 2, doorEnd, doorFrameMat);
-        createWallSegment(westGroup, 0.07, doorW + 0.08, 0.07, westX + 0.12, doorH, doorZ, doorFrameMat);
-        const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshStandardMaterial({ color: '#a88750', metalness: 0.75, roughness: 0.24 }));
-        knob.position.set(westX + 0.12, 0.92, doorZ + 0.2);
-        westGroup.add(knob);
-
-        // East and South walls are completely plain (no window, no door,
-        // no detail at all to break up the surface), unlike North/West --
-        // left the same pale interior palette color, a flat plain wall can
-        // visually blend into the similarly pale ground/background from
-        // outside. A slightly deeper tone keeps them reading as solid
-        // walls at a glance regardless of viewing angle or lighting.
-        const makePlainWallMat = () => new THREE.MeshStandardMaterial({
-          color: new THREE.Color(wallColor).lerp(new THREE.Color('#8f8575'), 0.3),
-          roughness: 0.9,
-          wireframe: showWireframe,
-        });
-
-        // East wall: plain, no window/door.
-        const eastX = roomW / 2;
-        const eastMat = makePlainWallMat();
-        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(1, 0, 0), material: eastMat });
-        createWallSegment(eastGroup, wallThick, roomL, wallHeight, eastX, wallHeight / 2, 0, eastMat, true);
-
-        // South wall: plain, no window/door (front-facing in the source
-        // photo/default view, but now solid like every other side -- the
-        // camera cutaway above is what keeps the interior visible).
-        const southZ = roomL / 2;
-        const southMat = makePlainWallMat();
-        shellWallMaterialsRef.current.push({ normal: new THREE.Vector3(0, 0, 1), material: southMat });
-        createWallSegment(southGroup, roomW, wallThick, wallHeight, 0, wallHeight / 2, southZ, southMat, true);
-
-        // Painted skirting and a narrow oak cap detail around the room shell.
-        const trim = new THREE.MeshStandardMaterial({ color: '#f5f0e7', roughness: 0.72 });
-        const baseH = 0.12;
-        const baseZ = northZ + wallThick / 2 + 0.015;
-        createWallSegment(northGroup, roomW, 0.035, baseH, 0, baseH / 2, baseZ, trim);
-        const sideBase = (length: number, z: number) => createWallSegment(westGroup, 0.035, length, baseH, westX + wallThick / 2 + 0.015, baseH / 2, z, trim);
-        sideBase(westSegment, -doorZ - doorW / 2 - westSegment / 2);
-        sideBase(westSegment, doorZ + doorW / 2 + westSegment / 2);
-        createWallSegment(eastGroup, 0.035, roomL, baseH, eastX - wallThick / 2 - 0.015, baseH / 2, 0, trim);
-        createWallSegment(southGroup, roomW, 0.035, baseH, 0, baseH / 2, southZ - wallThick / 2 - 0.015, trim);
-        const caps = new THREE.MeshStandardMaterial({ color: '#d5c1a1', roughness: 0.55 });
-        createWallSegment(northGroup, roomW, wallThick + 0.04, 0.045, 0, wallHeight - 0.02, northZ, caps);
-        createWallSegment(eastGroup, wallThick + 0.04, roomL, 0.045, eastX, wallHeight - 0.02, 0, caps);
-        createWallSegment(westGroup, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, -doorZ - doorW / 2 - westSegment / 2, caps);
-        createWallSegment(westGroup, wallThick + 0.04, westSegment, 0.045, westX, wallHeight - 0.02, doorZ + doorW / 2 + westSegment / 2, caps);
-        createWallSegment(southGroup, roomW, wallThick + 0.04, 0.045, 0, wallHeight - 0.02, southZ, caps);
-
-        // Apply the correct cutaway/fade immediately for the camera position
-        // already set earlier in build3DScene, instead of waiting for the
-        // next drag/zoom/mode-change to reveal the room's interior.
-        updateWallCutaway();
-        updateCameraFacingWallOpacity();
+        const roomOpenings = interiorData.openings?.length ? interiorData.openings : defaultRoomOpenings(roomW, roomL);
+        buildInteriorShell(scene, roomW, roomL, wallHeight, wallThick, wallMat, roomOpenings);
       }
-
-      if (!polygonCorners) addStyledDecor(
+      if (!polygonCorners && projectType === 'renovation') addStyledDecor(
         scene,
         roomW,
         roomL,
@@ -813,6 +701,94 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     }
     parent.add(mesh);
     return mesh;
+  };
+
+  const buildInteriorShell = (
+    scene: THREE.Scene,
+    width: number,
+    depth: number,
+    height: number,
+    thickness: number,
+    wallMaterial: THREE.Material,
+    openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[]
+  ) => {
+    const groups = {} as Record<'north' | 'south' | 'east' | 'west', THREE.Group>;
+    const walls = [
+      { side: 'north' as const, length: width, centerX: 0, centerZ: -depth / 2, horizontal: true },
+      { side: 'south' as const, length: width, centerX: 0, centerZ: depth / 2, horizontal: true },
+      { side: 'west' as const, length: depth, centerX: -width / 2, centerZ: 0, horizontal: false },
+      { side: 'east' as const, length: depth, centerX: width / 2, centerZ: 0, horizontal: false },
+    ];
+    const frameMaterial = new THREE.MeshStandardMaterial({ color: '#755d45', roughness: 0.58 });
+    const glassMaterial = new THREE.MeshStandardMaterial({ color: '#8fd3e8', roughness: 0.18, metalness: 0.22, transparent: true, opacity: 0.62 });
+    const doorMaterial = new THREE.MeshStandardMaterial({ color: '#9a7654', roughness: 0.7 });
+
+    for (const wall of walls) {
+      const group = new THREE.Group();
+      const wallFaceMaterial = wallMaterial.clone();
+      group.name = `${wall.side}-wall`;
+      groups[wall.side] = group;
+      scene.add(group);
+      const sideOpenings = openings
+        .filter((opening) => opening.wall === wall.side)
+        .map((opening) => ({ ...opening, start: Math.max(0, Math.min(wall.length, opening.start)), end: Math.max(0, Math.min(wall.length, opening.end)) }))
+        .filter((opening) => opening.end - opening.start > 0.15)
+        .sort((a, b) => a.start - b.start);
+      const origin = -wall.length / 2;
+      const center = (start: number, end: number) => origin + (start + end) / 2;
+      const addSpan = (start: number, end: number, bottom: number, top: number) => {
+        if (end <= start || top <= bottom) return;
+        const span = end - start;
+        const x = wall.horizontal ? center(start, end) : wall.centerX;
+        const z = wall.horizontal ? wall.centerZ : center(start, end);
+        createWallSegment(group, wall.horizontal ? span : thickness, wall.horizontal ? thickness : span, top - bottom, x, (top + bottom) / 2, z, wallFaceMaterial);
+        const normal = wall.side === 'north' ? new THREE.Vector3(0, 0, -1) : wall.side === 'south' ? new THREE.Vector3(0, 0, 1) : wall.side === 'east' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0);
+        shellWallMaterialsRef.current.push({ normal, material: wallFaceMaterial as THREE.MeshStandardMaterial });
+      };
+      let cursor = 0;
+      for (const opening of sideOpenings) {
+        const start = Math.max(cursor, opening.start);
+        const end = Math.max(start, opening.end);
+        addSpan(cursor, start, 0, height);
+        if (opening.type === 'window') {
+          const sill = Math.min(0.92, height * 0.34);
+          const head = Math.min(height - 0.08, 2.18);
+          addSpan(start, end, 0, sill);
+          addSpan(start, end, head, height);
+          const mid = center(start, end);
+          const x = wall.horizontal ? mid : wall.centerX;
+          const z = wall.horizontal ? wall.centerZ : mid;
+          const paneDepth = thickness * 0.38;
+          const pane = createWallSegment(group, wall.horizontal ? end - start : paneDepth, wall.horizontal ? paneDepth : end - start, Math.max(0.1, head - sill), x, (sill + head) / 2, z, glassMaterial);
+          pane.castShadow = false;
+          const frameWidth = 0.045;
+          for (const offset of [start, end]) {
+            const fx = wall.horizontal ? origin + offset : wall.centerX;
+            const fz = wall.horizontal ? wall.centerZ : origin + offset;
+            createWallSegment(group, wall.horizontal ? frameWidth : thickness * 0.55, wall.horizontal ? thickness * 0.55 : frameWidth, head - sill + 0.08, fx, (sill + head) / 2, fz, frameMaterial);
+          }
+          createWallSegment(group, wall.horizontal ? end - start : thickness * 0.55, wall.horizontal ? thickness * 0.55 : end - start, frameWidth, x, sill, z, frameMaterial);
+        } else {
+          const doorHeight = Math.min(2.08, height - 0.12);
+          addSpan(start, end, doorHeight, height);
+          const mid = center(start, end);
+          const x = wall.horizontal ? mid : wall.centerX;
+          const z = wall.horizontal ? wall.centerZ : mid;
+          const leaf = createWallSegment(group, wall.horizontal ? end - start - 0.05 : 0.045, wall.horizontal ? 0.045 : end - start - 0.05, doorHeight - 0.04, x, (doorHeight - 0.04) / 2, z, doorMaterial);
+          leaf.castShadow = false;
+          for (const offset of [start, end]) {
+            const fx = wall.horizontal ? origin + offset : wall.centerX;
+            const fz = wall.horizontal ? wall.centerZ : origin + offset;
+            createWallSegment(group, wall.horizontal ? 0.055 : thickness * 0.55, wall.horizontal ? thickness * 0.55 : 0.055, doorHeight, fx, doorHeight / 2, fz, frameMaterial);
+          }
+        }
+        cursor = Math.max(cursor, end);
+      }
+      addSpan(cursor, wall.length, 0, height);
+    }
+    wallGroupsRef.current = groups;
+    updateWallCutaway();
+    updateCameraFacingWallOpacity();
   };
 
   // Wall segment spanning two arbitrary points in the X/Z ground plane,
@@ -1304,7 +1280,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
                 {projectType === 'floorplan'
                   ? `Floor Plan (${roomW}m × ${roomL}m · ${floorPlanData?.rooms.length || 0} Rooms)`
                   : projectType === 'interior'
-                  ? `Interior Scheme (${roomW}m × ${roomL}m · ${interiorData?.furniture?.length || 0} Pieces)`
+                  ? `${interiorData?.roomType || 'Interior'} (${roomW}m × ${roomL}m · ${interiorData?.furniture?.length || 0} Pieces)`
                   : `House Reconstruction (${roomW}m × ${roomL}m)`}
               </p>
             </div>

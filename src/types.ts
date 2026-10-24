@@ -103,6 +103,19 @@ export interface FloorPlanResult {
     height: number;
     name: string;
   }[];
+  circulationPaths?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    kind: string;
+  }[];
+  circulationEfficiency?: number;
+  entrance?: {
+    x: number;
+    y: number;
+    side: 'top' | 'bottom' | 'left' | 'right';
+  };
   architecturalStyle?: string;
   designNotes?: string;
 }
@@ -124,6 +137,7 @@ export interface FurnitureItem {
   id: string;
   name: string;
   category: FurnitureCategory;
+  form?: string;
   x: number; // meters
   y: number; // meters
   width: number; // meters
@@ -135,6 +149,7 @@ export interface FurnitureItem {
   notes?: string;
   estimatedPrice?: string;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  clearance?: number;
   assetId?: string;
   assetUrl?: string;
 }
@@ -161,6 +176,7 @@ export interface InteriorDesignResult {
   additionalRequirements?: string;
   preferredColors?: string[];
   layoutWarnings?: string[];
+  openings?: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
 }
 
 // Workflow 3: Existing House Reconstruction Types

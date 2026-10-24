@@ -6,6 +6,7 @@ export interface FurnitureSuggestion extends Partial<FurnitureItem> {
   width: number;
   depth: number;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  clearance?: number;
 }
 
 export interface LayoutOpening {
@@ -19,6 +20,20 @@ export interface LayoutRoom {
   width: number;
   depth: number;
   openings?: LayoutOpening[];
+  doorClearance?: number;
+}
+
+export function defaultRoomOpenings(width: number, depth: number): LayoutOpening[] {
+  const doorWidth = Math.min(0.9, width * 0.18);
+  const doorStart = Math.max(0.3, Math.min(width - doorWidth - 0.3, width * 0.14));
+  return [
+    { wall: 'south', start: doorStart, end: doorStart + doorWidth, type: 'door' },
+    { wall: 'north', start: width * 0.32, end: width * 0.68, type: 'window' },
+  ];
+}
+
+export function roomDoorClearance(width: number, depth: number): number {
+  return Math.min(CLEARANCE, Math.max(0.22, Math.min(width, depth) * 0.08));
 }
 
 const CLEARANCE = 0.75;
@@ -35,12 +50,13 @@ function rectanglesOverlap(a: { x: number; y: number; width: number; depth: numb
 
 function hitsOpening(item: { x: number; y: number; width: number; depth: number }, room: LayoutRoom) {
   return (room.openings || []).some((opening) => {
+    const openingClearance = opening.type === 'door' ? room.doorClearance ?? CLEARANCE : 0.3;
     const spanStart = opening.wall === 'north' || opening.wall === 'south' ? item.x : item.y;
     const spanEnd = spanStart + (opening.wall === 'north' || opening.wall === 'south' ? item.width : item.depth);
-    const wallTouch = opening.wall === 'north' ? item.y < CLEARANCE
-      : opening.wall === 'south' ? item.y + item.depth > room.depth - CLEARANCE
-      : opening.wall === 'west' ? item.x < CLEARANCE : item.x + item.width > room.width - CLEARANCE;
-    return wallTouch && spanStart < opening.end + (opening.type === 'door' ? CLEARANCE : 0.3) && spanEnd > opening.start - (opening.type === 'door' ? CLEARANCE : 0.3);
+    const wallTouch = opening.wall === 'north' ? item.y < openingClearance
+      : opening.wall === 'south' ? item.y + item.depth > room.depth - openingClearance
+      : opening.wall === 'west' ? item.x < openingClearance : item.x + item.width > room.width - openingClearance;
+    return wallTouch && spanStart < opening.end + openingClearance && spanEnd > opening.start - openingClearance;
   });
 }
 
@@ -73,20 +89,32 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
         for (let x = 0; x <= room.width - width + 1e-6; x += 0.1) {
           const candidate = { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, width, depth };
           if (hitsOpening(candidate, room)) continue;
-          if (placed.some((other) => rectanglesOverlap(candidate, footprint(other)))) continue;
-          const clearanceHit = suggestion.category !== 'decor' && placed.some((other) => other.category !== 'decor' && rectanglesOverlap(
-            { x: candidate.x - CLEARANCE, y: candidate.y - CLEARANCE, width: candidate.width + CLEARANCE * 2, depth: candidate.depth + CLEARANCE * 2 }, footprint(other),
-          ));
+          const isRug = /rug/i.test(suggestion.name);
+          const collides = placed.some((other) => {
+            if (isRug || /rug/i.test(other.name)) return false;
+            return rectanglesOverlap(candidate, footprint(other));
+          });
+          if (collides) continue;
+          const clearanceHit = suggestion.category !== 'decor' && placed.some((other) => {
+            if (other.category === 'decor' || /rug/i.test(other.name)) return false;
+            const clearance = Math.max(suggestion.clearance ?? CLEARANCE, other.clearance ?? CLEARANCE);
+            return rectanglesOverlap(
+              { x: candidate.x - clearance, y: candidate.y - clearance, width: candidate.width + clearance * 2, depth: candidate.depth + clearance * 2 }, footprint(other),
+            );
+          });
           if (clearanceHit) continue;
           const centerDistance = Math.hypot(candidate.x + width / 2 - room.width / 2, candidate.y + depth / 2 - room.depth / 2);
-          const score = wallPenalty(candidate, room, suggestion.preferredWall) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
+          const anchorDistance = Number.isFinite(suggestion.x) && Number.isFinite(suggestion.y)
+            ? Math.hypot(candidate.x - Number(suggestion.x), candidate.y - Number(suggestion.y))
+            : 0;
+          const score = anchorDistance * 4 + wallPenalty(candidate, room, suggestion.preferredWall) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
           if (!best || score < best.score) best = { ...candidate, score, rotation, width: width0, depth: depth0 } as FurnitureItem & { score: number };
         }
       }
     }
     if (!best) continue; // Gracefully omit a suggested item that cannot fit.
     const { score: _score, ...item } = best;
-    placed.push({ ...item, id: suggestion.id || `f_${index + 1}`, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall });
+    placed.push({ ...item, id: suggestion.id || `f_${index + 1}`, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall, clearance: suggestion.clearance });
   }
   return placed;
 }
