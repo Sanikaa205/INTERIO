@@ -1,7 +1,15 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { ArrowLeft, BookmarkPlus, Home } from 'lucide-react';
+import { OrbitControls } from '@react-three/drei';
+import { ArrowLeft, BookmarkPlus, Home, Layers } from 'lucide-react';
 import { FloorPlanResult } from '../../types';
+import { buildHouseModel } from './model/buildHouseModel';
+import { Floors } from './Floors';
+import { Walls } from './Walls';
+import { Doors } from './Doors';
+import { Windows } from './Windows';
+import { Ceilings } from './Ceilings';
+import { WALL_HEIGHT } from './model/constants';
 
 interface FloorPlan3DProps {
   plan: FloorPlanResult;
@@ -18,6 +26,9 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   onBackToHome,
   onSaveProject,
 }) => {
+  const [showCeilings, setShowCeilings] = useState(false);
+  const model = useMemo(() => buildHouseModel(plan), [plan]);
+  const center = [(model.bounds.minX + model.bounds.maxX) / 2, 0, (model.bounds.minZ + model.bounds.maxZ) / 2] as [number, number, number];
   return (
     <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
       {/* Top Floating Control Bar */}
@@ -57,6 +68,15 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
         {/* Right: Save */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
           <button
+            id="btn-fp3d-ceiling"
+            onClick={() => setShowCeilings((visible) => !visible)}
+            className="px-3 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-200 text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-colors border border-stone-800"
+            title="Toggle ceiling"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Ceiling</span>
+          </button>
+          <button
             id="btn-fp3d-save"
             onClick={onSaveProject}
             className="px-3 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-200 text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-colors border border-stone-800"
@@ -70,9 +90,15 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
 
       {/* 3D Canvas */}
       <div className="w-full h-full rounded-lg">
-        <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[10, 10, 5]} intensity={1} />
+        <Canvas camera={{ position: [model.plotWidth, WALL_HEIGHT * 2.5, model.plotDepth], fov: 50 }}>
+          <ambientLight intensity={0.65} />
+          <directionalLight position={[model.plotWidth, WALL_HEIGHT * 3, model.plotDepth]} intensity={1.2} />
+          <Floors model={model} />
+          <Walls model={model} />
+          <Doors model={model} />
+          <Windows model={model} />
+          {showCeilings && <Ceilings model={model} />}
+          <OrbitControls target={center} makeDefault />
         </Canvas>
       </div>
     </div>

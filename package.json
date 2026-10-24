@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/services/interiorDesign.test.ts src/services/floorPlanGrow.test.ts src/services/floorPlanTopology.test.ts src/services/layoutConstraints.test.ts src/components/FloorPlan3D/model/wallEdges.test.ts src/components/FloorPlan3D/model/mergeWalls.test.ts src/components/FloorPlan3D/model/exterior.test.ts src/components/FloorPlan3D/model/doorOpenings.test.ts src/components/FloorPlan3D/model/windowOpenings.test.ts src/components/FloorPlan3D/model/floors.test.ts src/components/FloorPlan3D/model/buildHouseModel.test.ts"
+    "test": "tsx --test src/services/interiorDesign.test.ts src/services/floorPlanGrow.test.ts src/services/floorPlanTopology.test.ts src/services/layoutConstraints.test.ts src/components/FloorPlan3D/model/wallEdges.test.ts src/components/FloorPlan3D/model/mergeWalls.test.ts src/components/FloorPlan3D/model/exterior.test.ts src/components/FloorPlan3D/model/doorOpenings.test.ts src/components/FloorPlan3D/model/windowOpenings.test.ts src/components/FloorPlan3D/model/floors.test.ts src/components/FloorPlan3D/model/buildHouseModel.test.ts src/components/FloorPlan3D/model/wallPieces.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
