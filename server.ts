@@ -2324,6 +2324,11 @@ function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide
       if (doorTarget && isPublic(doorTarget)) score -= 120;
       for (const other of rooms.filter(isPublic)) if (sharedWallBetween(bed, other) >= 1.0) score -= 6; // the hard rule is the door (hallway only); a shared wall alone is a mild privacy cost
     }
+    // The reverse leak: a living area whose door leads into a bedroom (the lounge reached through the master).
+    for (const room of rooms.filter(isPublic)) {
+      const t = room.doorTargetId ? byId(room.doorTargetId) : null;
+      if (t && (t.type === 'bedroom' || t.type === 'master-bedroom')) score -= 120;
+    }
   }
   if (hint.minimalCorridor) {
     const hallArea = rooms
@@ -3133,7 +3138,7 @@ ${allowLegacyFallback ? 'INTERIO_LEGACY_FALLBACK=1: falling back to the legacy c
     layoutSource: best.hinted ? 'topology-hinted' : 'solver',
     layoutScore: best.score,
     minAreaShortfalls: shortfalls,
-    requirementsReport: constraints ? { applied: constraints.applied, notApplied: constraints.notApplied } : undefined,
+    requirementsReport: constraints ? { applied: constraints.applied, notApplied: constraints.notApplied, missingRooms: constraints.missingRooms } : undefined,
     constraintError: minimumIssue
       ? `The ${plotW}m × ${plotL}m plot cannot accommodate all requested rooms with the minimum practical room dimensions and circulation clearance. Reduce room sizes/count or increase the plot dimensions.`
       : undefined,

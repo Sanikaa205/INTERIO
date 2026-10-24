@@ -28,6 +28,8 @@ export interface LayoutConstraints {
   /** Human-readable lines for the plan notes. */
   applied: string[];
   notApplied: string[];
+  /** Rooms the text asks for that are not in the room list, so no plan can contain them. */
+  missingRooms: string[];
 }
 
 export interface ProgramRoom { name: string; type: string }
@@ -35,7 +37,7 @@ export interface ProgramRoom { name: string; type: string }
 export function emptyConstraints(): LayoutConstraints {
   return {
     adjacent: [], avoid: [], placements: [], sharedBathrooms: [],
-    minimalCorridor: false, bedroomPrivacy: false, naturalLight: false, applied: [], notApplied: [],
+    minimalCorridor: false, bedroomPrivacy: false, naturalLight: false, applied: [], notApplied: [], missingRooms: [],
   };
 }
 
@@ -191,7 +193,7 @@ export function parseRequirementsLocally(text: string, program: ProgramRoom[]): 
       out.bedroomPrivacy = true; used = true;
       out.applied.push('Bedroom privacy: bedrooms open onto the hallway, not the living areas');
     }
-    if (/minimal\s+(?:corridor|circulation|passage|hallway)|no\s+corridor|avoid\s+(?:long\s+)?(?:corridors?|hallways?)|compact\s+circulation|less\s+corridor|minimi[sz]e\s+(?:corridor|circulation)/.test(s) && !out.minimalCorridor) {
+    if (/(?:minimal|minimum|least|little|less|reduce[sd]?|limited)\s+(?:\w+\s+){0,2}?(?:corridors?|circulation|passages?|hallways?)|no\s+corridor|avoid\s+(?:long\s+)?(?:corridors?|hallways?)|compact\s+circulation|less\s+corridor|minimi[sz]e\s+(?:corridor|circulation)/.test(s) && !out.minimalCorridor) {
       out.minimalCorridor = true; used = true;
       out.applied.push('Minimal corridor space: shortest workable hallway');
     }
@@ -214,6 +216,27 @@ export function parseRequirementsLocally(text: string, program: ProgramRoom[]): 
       out.notApplied.push(clause.slice(0, 80));
     }
   }
+  // Rooms the text asks for that the room list does not contain: the solver
+  // lays out the list, so these can never appear -- say so instead of dropping them.
+  const has = (nameRe: RegExp, types: string[]) => program.some((r) => nameRe.test(r.name.toLowerCase()) || types.includes(r.type));
+  const WANTED: [RegExp, string, RegExp, string[]][] = [
+    [/\b(?:home\s+)?(?:office|study)\b/, 'a home office', /office|study/, ['office']],
+    [/\blaundry\b/, 'a laundry area', /laundry/, ['laundry']],
+    [/\bpantry\b/, 'a pantry', /pantry/, []],
+    [/\bbalcony\b/, 'a balcony', /balcony/, ['balcony']],
+    [/\b(?:pooja|puja|prayer)\b/, 'a pooja room', /pooja|puja|prayer/, []],
+    [/\bgarage|car\s*park/, 'a garage', /garage|car\s*park/, []],
+    [/\b(?:store\s*room|storage)\b/, 'a store room', /store|storage/, []],
+    [/\bgym\b/, 'a gym', /gym/, []],
+  ];
+  for (const [re, label, nameRe, types] of WANTED) if (re.test(lower) && !has(nameRe, types)) out.missingRooms.push(label);
+  const WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+  const bathMatch = /\b(\d+|one|two|three|four|five)\s+(?:bath(?:room)?s?|toilets?)\b/.exec(lower);
+  const wantedBaths = bathMatch ? (WORDS[bathMatch[1]] ?? Number(bathMatch[1])) : 0;
+  const haveBaths = program.filter((r) => r.type === 'bathroom').length;
+  if (wantedBaths > haveBaths) out.missingRooms.push(`${wantedBaths - haveBaths} more bathroom${wantedBaths - haveBaths > 1 ? 's' : ''} (text says ${wantedBaths}, list has ${haveBaths})`);
+  // Those clauses are missing rooms, not missing rules: report them once.
+  if (out.missingRooms.length) out.notApplied = out.notApplied.filter((c) => !WANTED.some(([re]) => re.test(c)));
   return out;
 }
 
@@ -236,6 +259,7 @@ export function mergeConstraints(primary: LayoutConstraints, extra: Partial<Layo
 export function describeConstraints(c: LayoutConstraints): string {
   const parts: string[] = [];
   if (c.applied.length) parts.push(`Applied from your requirements: ${c.applied.slice(0, 6).join('; ')}.`);
+  if (c.missingRooms.length) parts.push(`Your text mentions ${c.missingRooms.join(', ')}, but ${c.missingRooms.length > 1 ? 'they are' : 'it is'} not in your room list, so the plan does not include ${c.missingRooms.length > 1 ? 'them' : 'it'}: add ${c.missingRooms.length > 1 ? 'them' : 'it'} as a room to get ${c.missingRooms.length > 1 ? 'them' : 'it'}.`);
   if (c.notApplied.length) parts.push(`No layout rule yet for: ${c.notApplied.slice(0, 4).join('; ')}.`);
   return parts.join(' ');
 }

@@ -197,3 +197,18 @@ test('solver: the 3 BHK prompt gives a back master with its ensuite, and bedroom
   }
   assert.ok(privateBedrooms >= 2, `all three bedrooms opened onto the hallway/corridor in only ${privateBedrooms}/${seeds.length} plans`);
 });
+
+test('parser: wording variants of minimal corridor, and rooms asked for but missing from the list', () => {
+  const program: ProgramRoom[] = [
+    { name: 'Living Room', type: 'living-room' }, { name: 'Master Suite', type: 'master-bedroom' },
+    { name: 'Spa Bathroom', type: 'bathroom' }, { name: 'Powder Room', type: 'bathroom' },
+  ];
+  assert.equal(parseRequirementsLocally('Keep minimal wasted corridor space.', program).minimalCorridor, true);
+  assert.equal(parseRequirementsLocally('Reduce circulation area.', program).minimalCorridor, true);
+  const c = parseRequirementsLocally('Include 3 bathrooms, a guest powder room, a home office, and a laundry area.', program);
+  assert.deepEqual(c.missingRooms, ['a home office', 'a laundry area', '1 more bathroom (text says 3, list has 2)']);
+  assert.ok(!c.notApplied.some((n) => /office|laundry/.test(n)));
+  assert.match(describeConstraints(c), /not in your room list/);
+  const withOffice = parseRequirementsLocally('A home office is needed.', [...program, { name: 'Study', type: 'office' }]);
+  assert.deepEqual(withOffice.missingRooms, []);
+});
