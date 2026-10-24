@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { DesignStyle, InteriorDesignResult } from '../types';
 import { generateInteriorApi } from '../services/api';
-import { defaultRoomOpenings } from '../services/layoutOptimizer';
+import { defaultRoomOpenings, furnitureFootprint } from '../services/layoutOptimizer';
 
 interface InteriorDesignWorkflowProps {
   onView3D: (result: InteriorDesignResult) => void;
@@ -300,17 +300,14 @@ export const InteriorFloorPlan: React.FC<{
       {[...result.furniture].sort((a, b) => Number(!/rug/i.test(`${a.name} ${a.form || ''}`)) - Number(!/rug/i.test(`${b.name} ${b.form || ''}`))).map((item) => {
         const isSelected = selectedFurnitureId === item.id;
         const showLabel = !/kitchen|dining/i.test(result.roomType) && /coffee table|dining table|desk|console|media|tv unit|rug|wardrobe|counter|sideboard|cabinet/i.test(item.name);
-        // FurnitureItem coordinates are the local shape origin. Rotated items
-        // may have a small negative local origin while their world footprint
-        // remains fully inside the room; clipping dimensions here distorts it.
+        // Keep the local shape size intact; the shared footprint helper below
+        // supplies the rotated world-space bounds used by both plan views.
         const width = Math.max(0.08, item.width);
         const depth = Math.max(0.08, item.depth);
         const rotation = item.rotation || 0;
-        const rotated = rotation % 180 !== 0;
-        const footprintWidth = rotated ? depth : width;
-        const footprintDepth = rotated ? width : depth;
-        const cx = item.x + footprintWidth / 2;
-        const cy = item.y + footprintDepth / 2;
+        const bounds = furnitureFootprint(item);
+        const cx = bounds.x + bounds.width / 2;
+        const cy = bounds.y + bounds.depth / 2;
         return <g key={item.id} onClick={() => onSelectFurniture(item.id)} className="cursor-pointer" filter="url(#furniture-shadow)" transform={rotation ? `rotate(${rotation} ${cx} ${cy})` : undefined}>
           <g transform={`translate(${cx - width / 2} ${cy - depth / 2})`} aria-label={item.name}>{furnitureShape(`${item.form || ''} ${item.name} ${item.category || ''}`, width, depth, item.color || '#d6d3d1')}</g>
           {isSelected && <rect x={cx - width / 2 - .045} y={cy - depth / 2 - .045} width={width + .09} height={depth + .09} rx=".1" fill="none" stroke="#0f172a" strokeWidth=".045" strokeDasharray=".12 .07" pointerEvents="none" />}

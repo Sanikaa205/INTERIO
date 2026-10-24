@@ -135,6 +135,20 @@ test('style choices alter furniture materials and finishes', () => {
   const noTv = createRoomFurnitureSuggestions('Living Room', 5.5, 6.5, 'modern', modernPalette, 'No TV, please; add a reading nook');
   assert.ok(!noTv.some((item) => /media console/i.test(item.name)));
   assert.ok(noTv.some((item) => /reading chair/i.test(item.name)));
+
+  const allStyles = ['modern', 'minimal', 'traditional', 'industrial', 'scandinavian', 'japandi'] as const;
+  for (const roomType of ['Living Room', 'Bedroom', 'Dining Room', 'Study Room']) {
+    const signatures = allStyles.map((selectedStyle) => {
+      const pieces = createRoomFurnitureSuggestions(roomType, 5.5, 6.5, selectedStyle, modernPalette, '', '$35,000 - $60,000');
+      const arranged = optimizeFurnitureLayout(pieces, { width: 5.5, depth: 6.5, openings: defaultRoomOpenings(5.5, 6.5) });
+      return JSON.stringify(arranged.map(({ id, name, material, width, depth, x, y }) => ({ id, name, material, width, depth, x, y })));
+    });
+    assert.equal(new Set(signatures).size, allStyles.length, `${roomType} furniture list, materials, sizing, and placement vary by selected style`);
+  }
+
+  const essential = createRoomFurnitureSuggestions('Living Room', 5.5, 6.5, 'modern', modernPalette, '', '$5,000 - $10,000');
+  const bespoke = createRoomFurnitureSuggestions('Living Room', 5.5, 6.5, 'modern', modernPalette, '', '$75,000+');
+  assert.notEqual(essential[0].material, bespoke[0].material, 'budget changes furniture material finish tier');
 });
 
 test('3D procedural models use room-specific shapes for beds, kitchen units, and bathroom fixtures', () => {
