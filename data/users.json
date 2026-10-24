@@ -12,5 +12,109 @@
     "password": "$2b$10$x0jcto6EyahzBcqAwaCmS.tIZWWC6FHeKXuGc4FqS4hMQFFTbv66W",
     "name": "Alex Vance",
     "createdAt": "2026-09-02T07:56:47.894Z"
+  },
+  {
+    "id": "usr_1792483147987_j8uiq",
+    "email": "debugtest_wallfix@example.com",
+    "password": "$2b$10$5NGUlVvW.dAMGD9QHrmj7.Wv1JLdIxucLtXkqg4jzcYmZeYycVdP2",
+    "name": "Wall Fix Tester",
+    "role": "Architect",
+    "createdAt": "2026-10-20T07:59:08.086Z"
+  },
+  {
+    "id": "usr_1792497208816_wgyxf",
+    "email": "debugtest_wallsvg@example.com",
+    "password": "$2b$10$hGVbH0yEVKnj8Tgz/gRkbeC/8XlSQM..kaoS.qD4c238uPkqOfYYq",
+    "name": "Wall SVG Tester",
+    "role": "Architect",
+    "createdAt": "2026-10-20T11:53:28.979Z"
+  },
+  {
+    "id": "usr_1792770236460_c8mzl",
+    "email": "icontest_tmp@test.com",
+    "password": "$2b$10$Iqmr31FRVWxehldN4wxCzufbswg6PSmsu7NygjzIi9tMVALxDFD0.",
+    "name": "Icon Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T15:43:56.596Z"
+  },
+  {
+    "id": "usr_1792776980395_59n0s",
+    "email": "styletest_tmp@test.com",
+    "password": "$2b$10$ucwnw1Yxrc2PGRVOkbNAoOjm90ooFUF51bf4VUfHpKsQeHHmktGky",
+    "name": "Style Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T17:36:20.466Z"
+  },
+  {
+    "id": "usr_1792782846534_oi80s",
+    "email": "zonetest_tmp@test.com",
+    "password": "$2b$10$0YRpoP9yUhap8/mX7rx33.et/gWdT9DvUo9r7yEJqceFtXGg5UOoK",
+    "name": "Zone Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T19:14:06.617Z"
+  },
+  {
+    "id": "usr_1792784161762_wimku",
+    "email": "walltest_tmp@test.com",
+    "password": "$2b$10$kDjZlOvoZdXeqNg7/tuO6OQMgrQ1jf4iTBR7kKL5x9/.b5uC/PO6.",
+    "name": "Wall Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T19:36:01.832Z"
+  },
+  {
+    "id": "usr_1792784420148_57s08",
+    "email": "walltest2_tmp@test.com",
+    "password": "$2b$10$j3InTipM475oelbMnh32fukPuXuWtPvtcqUjQoXMX5bgZVSTYYxou",
+    "name": "Wall Test 2",
+    "role": "Architect",
+    "createdAt": "2026-10-23T19:40:20.217Z"
+  },
+  {
+    "id": "usr_1792785132216_l2hq4",
+    "email": "dragtest_tmp@test.com",
+    "password": "$2b$10$9hhOYGr3Muk8.5QPnotSaO6WyLQPbt6G5mirZC7rt.tCkG1/Me3y6",
+    "name": "Drag Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T19:52:12.291Z"
+  },
+  {
+    "id": "usr_1792785935531_v3oib",
+    "email": "floortest_tmp@test.com",
+    "password": "$2b$10$XtZKa8dTAeo2ROs7O/TLOuHW2eTgwZMzrdCJslzXE1qYGJz9MEVTS",
+    "name": "Floor Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T20:05:35.641Z"
+  },
+  {
+    "id": "usr_1792787355612_q5tqf",
+    "email": "furntest_tmp@test.com",
+    "password": "$2b$10$luVJEhiCTZxRAMeXGf1ryO0xjr8vvoCNRQSsyhjagTHsZZ2bjRAi6",
+    "name": "Furn Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T20:29:15.682Z"
+  },
+  {
+    "id": "usr_1792790147117_w4lhy",
+    "email": "annotest_tmp@test.com",
+    "password": "$2b$10$kK.tRnnqZSGOVCyGFDErGOjU1upSZyNCWXrbW1Ni2FUuFnmXTC6K.",
+    "name": "Anno Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T21:15:47.187Z"
+  },
+  {
+    "id": "usr_1792791699700_v1t3n",
+    "email": "entrytest_tmp@test.com",
+    "password": "$2b$10$SZKpAVGCtxoO6GT1W9Z4tezmxZyAphSiG32SVsXyLuYN1JQFrNqPC",
+    "name": "Entry Test",
+    "role": "Architect",
+    "createdAt": "2026-10-23T21:41:39.771Z"
+  },
+  {
+    "id": "usr_1792830614877_q6aot",
+    "email": "playwright_test@example.com",
+    "password": "$2b$10$xwalBuc6NHDLhIIwJb8QAevBpPBaIgsMImtTFRt9sfNLLYZVPXx6u",
+    "name": "PW Test",
+    "role": "Architect",
+    "createdAt": "2026-10-24T08:30:14.970Z"
   }
 ]

@@ -192,7 +192,7 @@ export async function generateFloorPlanApi(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
-  }, 60000);
+  }, 150000); // gemini-3.5-flash can take up to ~95s, plus a lite fallback and the algorithmic generator
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to generate floor plan' }));
     throw new Error(err.error || 'Failed to generate floor plan. Please try again.');

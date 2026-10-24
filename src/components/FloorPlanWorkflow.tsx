@@ -347,6 +347,12 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
     tryMoveRoom(selectedRoomId, room.x + dx, room.y + dy);
   };
 
+  // Keep both bounds available: the building box keeps the plan styling
+  // focused, while the plot box is the measured architectural datum used
+  // for the site boundary and overall dimensions.
+  const buildingBBox = result ? getBuildingBoundingBox(result.rooms, result.circulation) : null;
+  const plotBBox = result ? { minX: 0, minY: 0, width: result.plotWidth, height: result.plotLength } : null;
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8 space-y-8">
       {/* Header & Back Navigation */}
@@ -698,7 +704,7 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                   </p>
                   <svg
                     ref={svgRef}
-                    viewBox={`${-PLAN_MARGIN_M} ${-PLAN_MARGIN_M} ${result.plotWidth + PLAN_MARGIN_M * 2} ${result.plotLength + PLAN_MARGIN_M * 2}`}
+                    viewBox={`${plotBBox!.minX - PLAN_MARGIN_M} ${plotBBox!.minY - PLAN_MARGIN_M} ${plotBBox!.width + PLAN_MARGIN_M * 2} ${plotBBox!.height + PLAN_MARGIN_M * 2}`}
                     className="w-full max-h-[480px] border border-stone-200 rounded-lg bg-white"
                     style={{ touchAction: 'none' }}
                   >
@@ -718,20 +724,34 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                     {/* Backing plate: carries the drop shadow for the whole
                         plan footprint so individual rooms/walls stay crisp. */}
                     <rect
-                      x="0"
-                      y="0"
-                      width={result.plotWidth}
-                      height={result.plotLength}
+                      x={buildingBBox!.minX}
+                      y={buildingBBox!.minY}
+                      width={buildingBBox!.width}
+                      height={buildingBBox!.height}
                       fill="#ffffff"
                       filter="url(#plan-shadow)"
                     />
 
+                    {/* Faint plot boundary -- kept visible only where it
+                        falls within the building-fitted viewBox, as a quiet
+                        property-line reference rather than a dominant frame. */}
+                    <rect
+                      x="0"
+                      y="0"
+                      width={result.plotWidth}
+                      height={result.plotLength}
+                      fill="none"
+                      stroke="#d6d3d1"
+                      strokeWidth="0.03"
+                      strokeDasharray="0.2 0.15"
+                    />
+
                     {showGrid && (
                       <rect
-                        x="0"
-                        y="0"
-                        width={result.plotWidth}
-                        height={result.plotLength}
+                        x={buildingBBox!.minX}
+                        y={buildingBBox!.minY}
+                        width={buildingBBox!.width}
+                        height={buildingBBox!.height}
                         fill="url(#cad-grid)"
                       />
                     )}
@@ -759,8 +779,8 @@ export const FloorPlanWorkflow: React.FC<FloorPlanWorkflowProps> = ({
                         per-room dimension chains. */}
                     {showDimensions && (
                       <>
-                        {renderOverallDimension(result.plotWidth, result.plotLength, 'top')}
-                        {renderOverallDimension(result.plotWidth, result.plotLength, 'left')}
+                        {renderOverallDimension(plotBBox!, 'top')}
+                        {renderOverallDimension(plotBBox!, 'left')}
                       </>
                     )}
 
@@ -2366,18 +2386,31 @@ const LABEL_SHORTEN_BELOW_M = 1.6;
 
 function computeRoomLabelStyle(room: FloorPlanRoom, areaText: string): { nameSizeM: number; areaSizeM: number; showArea: boolean; displayName: string } {
   const minDim = Math.min(room.width, room.height);
-  const nameSizeM = Math.max(LABEL_NAME_SIZE_MIN_M, Math.min(LABEL_NAME_SIZE_MAX_M, minDim / 5));
-  const areaSizeM = Math.max(LABEL_AREA_SIZE_MIN_M, nameSizeM * 0.6);
+  let nameSizeM = Math.max(LABEL_NAME_SIZE_MIN_M, Math.min(LABEL_NAME_SIZE_MAX_M, minDim / 5));
   const area = room.area ?? room.width * room.height;
   const showArea = area >= LABEL_HIDE_AREA_BELOW_M2;
+  const availableWidth = room.width * 0.85;
+  const displayName = room.name;
+  const widthAt = (size: number) => displayName.length * LABEL_CHAR_WIDTH_FACTOR * size;
 
-  let displayName = room.name;
-  if (minDim < LABEL_SHORTEN_BELOW_M || !showArea) {
-    const maxChars = Math.max(4, Math.floor((room.width * 0.85) / (nameSizeM * LABEL_CHAR_WIDTH_FACTOR)));
-    if (displayName.length > maxChars) displayName = `${displayName.slice(0, Math.max(3, maxChars - 1))}…`;
+  // A room doesn't have to be narrow to have a name too long for it --
+  // "Laundry / Utility" overflows a perfectly normal-sized room just from
+  // sheer character count. Shrink the font first (down to the minimum)
+  // whenever the full name doesn't fit at the room-size-driven font size.
+  if (widthAt(nameSizeM) > availableWidth) {
+    nameSizeM = Math.max(LABEL_NAME_SIZE_MIN_M, availableWidth / (displayName.length * LABEL_CHAR_WIDTH_FACTOR));
   }
 
-  return { nameSizeM, areaSizeM, showArea, displayName };
+  // Only once shrinking the font can't make it fit (or the room is simply
+  // too small/too narrow for a name at all) do we fall back to a shortened
+  // name instead.
+  let shortName = displayName;
+  if (minDim < LABEL_SHORTEN_BELOW_M || !showArea || widthAt(nameSizeM) > availableWidth) {
+    const maxChars = Math.max(4, Math.floor(availableWidth / (nameSizeM * LABEL_CHAR_WIDTH_FACTOR)));
+    if (shortName.length > maxChars) shortName = `${shortName.slice(0, Math.max(3, maxChars - 1))}…`;
+  }
+
+  return { nameSizeM, areaSizeM: Math.max(LABEL_AREA_SIZE_MIN_M, nameSizeM * 0.6), showArea, displayName: shortName };
 }
 
 // Approximate footprint (in metres) of the stacked name + area label block,
@@ -2429,6 +2462,24 @@ function computeRoomLabelCenter(room: FloorPlanRoom, areaText: string): { x: num
 // scale), so only the interactive viewBox needs this constant.
 const PLAN_MARGIN_M = 1.6;
 
+interface BuildingBBox { minX: number; minY: number; width: number; height: number; }
+
+// The smallest axis-aligned box containing every room and circulation
+// space -- used to fit the view (and the overall dimension lines) to the
+// actual built mass instead of the whole plot, since a plan's building no
+// longer always fills the full plot (stepped/L footprints intentionally
+// leave yard outside it). Shared by the interactive view (which fits its
+// viewBox to this box) and the export (which converts it into pixel space).
+function getBuildingBoundingBox(rooms: FloorPlanRoom[], circulation?: { x: number; y: number; width: number; height: number }[]): BuildingBBox {
+  const rects: { x: number; y: number; width: number; height: number }[] = [...rooms, ...(circulation || [])];
+  if (!rects.length) return { minX: 0, minY: 0, width: 0, height: 0 };
+  const minX = Math.min(...rects.map((r) => r.x));
+  const minY = Math.min(...rects.map((r) => r.y));
+  const maxX = Math.max(...rects.map((r) => r.x + r.width));
+  const maxY = Math.max(...rects.map((r) => r.y + r.height));
+  return { minX, minY, width: maxX - minX, height: maxY - minY };
+}
+
 type Axis = 'x' | 'y';
 interface Line2D { x1: number; y1: number; x2: number; y2: number; }
 interface ArrowTip { x: number; y: number; pointDir: 1 | -1; axis: Axis; }
@@ -2465,42 +2516,44 @@ interface OverallDimensionGeometry {
   label: string;
 }
 
-// A single overall-span dimension (total plot width along the top edge,
-// total plot height along the left edge) with arrowheads at both ends --
-// replaces the old per-room dimension chains, which is the one thing that
-// changes with the layout; this reads only plotWidth/plotLength, so it's
-// identical regardless of how the rooms inside are arranged.
-function buildOverallDimensionGeometry(plotWidth: number, plotLength: number, edge: 'top' | 'left'): OverallDimensionGeometry {
+// A single overall-span dimension (the BUILDING's width along the top edge,
+// its height along the left edge -- not the whole plot, which can now be
+// larger than the built mass) with arrowheads at both ends -- replaces the
+// old per-room dimension chains, which is the one thing that changes with
+// the layout; this reads only the building bounding box, so it's identical
+// regardless of how the rooms inside are arranged.
+function buildOverallDimensionGeometry(bbox: BuildingBBox, edge: 'top' | 'left'): OverallDimensionGeometry {
+  const { minX, minY, width, height } = bbox;
   if (edge === 'top') {
-    const lineY = -OVERALL_DIM_OFFSET;
+    const lineY = minY - OVERALL_DIM_OFFSET;
     return {
-      witnessStart: { x1: 0, y1: -OVERALL_DIM_WITNESS_GAP, x2: 0, y2: lineY },
-      witnessEnd: { x1: plotWidth, y1: -OVERALL_DIM_WITNESS_GAP, x2: plotWidth, y2: lineY },
-      mainLine: { x1: 0, y1: lineY, x2: plotWidth, y2: lineY },
-      arrowStart: { x: 0, y: lineY, pointDir: -1, axis: 'x' },
-      arrowEnd: { x: plotWidth, y: lineY, pointDir: 1, axis: 'x' },
-      labelX: plotWidth / 2,
+      witnessStart: { x1: minX, y1: minY - OVERALL_DIM_WITNESS_GAP, x2: minX, y2: lineY },
+      witnessEnd: { x1: minX + width, y1: minY - OVERALL_DIM_WITNESS_GAP, x2: minX + width, y2: lineY },
+      mainLine: { x1: minX, y1: lineY, x2: minX + width, y2: lineY },
+      arrowStart: { x: minX, y: lineY, pointDir: -1, axis: 'x' },
+      arrowEnd: { x: minX + width, y: lineY, pointDir: 1, axis: 'x' },
+      labelX: minX + width / 2,
       labelY: lineY - OVERALL_DIM_LABEL_GAP,
       labelRotation: 0,
-      label: `${plotWidth.toFixed(2)} m`,
+      label: `${width.toFixed(2)} m`,
     };
   }
-  const lineX = -OVERALL_DIM_OFFSET;
+  const lineX = minX - OVERALL_DIM_OFFSET;
   return {
-    witnessStart: { x1: -OVERALL_DIM_WITNESS_GAP, y1: 0, x2: lineX, y2: 0 },
-    witnessEnd: { x1: -OVERALL_DIM_WITNESS_GAP, y1: plotLength, x2: lineX, y2: plotLength },
-    mainLine: { x1: lineX, y1: 0, x2: lineX, y2: plotLength },
-    arrowStart: { x: lineX, y: 0, pointDir: -1, axis: 'y' },
-    arrowEnd: { x: lineX, y: plotLength, pointDir: 1, axis: 'y' },
+    witnessStart: { x1: minX - OVERALL_DIM_WITNESS_GAP, y1: minY, x2: lineX, y2: minY },
+    witnessEnd: { x1: minX - OVERALL_DIM_WITNESS_GAP, y1: minY + height, x2: lineX, y2: minY + height },
+    mainLine: { x1: lineX, y1: minY, x2: lineX, y2: minY + height },
+    arrowStart: { x: lineX, y: minY, pointDir: -1, axis: 'y' },
+    arrowEnd: { x: lineX, y: minY + height, pointDir: 1, axis: 'y' },
     labelX: lineX - OVERALL_DIM_LABEL_GAP,
-    labelY: plotLength / 2,
+    labelY: minY + height / 2,
     labelRotation: -90,
-    label: `${plotLength.toFixed(2)} m`,
+    label: `${height.toFixed(2)} m`,
   };
 }
 
-function renderOverallDimension(plotWidth: number, plotLength: number, edge: 'top' | 'left') {
-  const g = buildOverallDimensionGeometry(plotWidth, plotLength, edge);
+function renderOverallDimension(bbox: BuildingBBox, edge: 'top' | 'left') {
+  const g = buildOverallDimensionGeometry(bbox, edge);
   const a1 = arrowheadPoints(g.arrowStart);
   const a2 = arrowheadPoints(g.arrowEnd);
   const labelTransform = g.labelRotation ? `rotate(${g.labelRotation}, ${g.labelX}, ${g.labelY})` : undefined;
@@ -2614,13 +2667,20 @@ function EntryMarkerGroup({ room, door }: { room: FloorPlanRoom; door: { side?: 
  * for an image-based floor-plan processor.
  */
 function createArchitecturalPlanSvg(result: FloorPlanResult): string {
-  const pxPerMeter = Math.max(42, Math.min(72, 1800 / Math.max(result.plotWidth, result.plotLength)));
+  // Fit the canvas and scale to the BUILDING's own bounding box, not the
+  // whole plot -- see getBuildingBoundingBox. px()/py() then convert an
+  // absolute plot-space coordinate into this canvas's pixel space, shifted
+  // by the building's own origin instead of the plot's (0,0).
+  const buildingBBox = getBuildingBoundingBox(result.rooms, result.circulation);
+  const pxPerMeter = Math.max(42, Math.min(72, 1800 / Math.max(buildingBBox.width, buildingBBox.height)));
   const margin = 140;
-  const planW = Math.round(result.plotWidth * pxPerMeter);
-  const planH = Math.round(result.plotLength * pxPerMeter);
+  const planW = Math.round(buildingBBox.width * pxPerMeter);
+  const planH = Math.round(buildingBBox.height * pxPerMeter);
   const canvasW = planW + margin * 2;
   const canvasH = planH + margin * 2 + 70;
   const p = (value: number) => Number((value * pxPerMeter).toFixed(1));
+  const px = (value: number) => margin + p(value - buildingBBox.minX);
+  const py = (value: number) => margin + p(value - buildingBBox.minY);
   const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char] || char));
   const title = `${result.plotWidth}m × ${result.plotLength}m FLOOR PLAN`;
   const plotArea = result.plotArea ?? Math.round(result.plotWidth * result.plotLength * 10) / 10;
@@ -2632,7 +2692,7 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   // room painting its own, with real gaps already cut for every door and
   // window (see buildWallSegments). Computed once for the whole plan.
   const wallsSvg = buildWallSegments(result.rooms, result.plotWidth, result.plotLength)
-    .map((seg) => `<line x1="${margin + p(seg.x1)}" y1="${margin + p(seg.y1)}" x2="${margin + p(seg.x2)}" y2="${margin + p(seg.y2)}" stroke="${PLAN_INK}" stroke-width="${p(seg.thickness)}" stroke-linecap="square"/>`)
+    .map((seg) => `<line x1="${px(seg.x1)}" y1="${py(seg.y1)}" x2="${px(seg.x2)}" y2="${py(seg.y2)}" stroke="${PLAN_INK}" stroke-width="${p(seg.thickness)}" stroke-linecap="square"/>`)
     .join('');
 
   // Real architectural door symbol: a straight leaf from the hinge jamb and
@@ -2643,7 +2703,7 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
     const side = (doorOpening.side || 'bottom') as OpeningSide;
     const width = p(doorOpening.width ?? 0.9);
     const offset = p(doorOpening.offset ?? 0.3);
-    const pseudoRoom = { x: margin + p(room.x), y: margin + p(room.y), width: p(room.width), height: p(room.height) } as FloorPlanRoom;
+    const pseudoRoom = { x: px(room.x), y: py(room.y), width: p(room.width), height: p(room.height) } as FloorPlanRoom;
     const { hx, hy, jx, jy, tx, ty, sweep } = doorSwingGeometry(pseudoRoom, side, offset, width);
     return `<line x1="${hx}" y1="${hy}" x2="${tx}" y2="${ty}" stroke="${PLAN_INK}" stroke-width="${doorLineWidthPx}"/>
       <path d="M ${jx} ${jy} A ${width} ${width} 0 0 ${sweep} ${tx} ${ty}" fill="none" stroke="${PLAN_INK}" stroke-width="${doorLineWidthPx}"/>`;
@@ -2655,8 +2715,8 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   const windowSymbol = (room: FloorPlanRoom, win: { side?: string; offset?: number; width?: number }) => {
     const side = win.side as OpeningSide | undefined;
     if (!side) return '';
-    const x = margin + p(room.x);
-    const y = margin + p(room.y);
+    const x = px(room.x);
+    const y = py(room.y);
     const w = p(room.width);
     const h = p(room.height);
     const opening = p(win.width ?? 1.2);
@@ -2693,8 +2753,8 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   };
   const placedFurnitureSvg = (item: PlacedFurniture): string => {
     const bbox = furnitureBBox(item);
-    const centerXPx = margin + p(bbox.x) + p(bbox.width) / 2;
-    const centerYPx = margin + p(bbox.y) + p(bbox.height) / 2;
+    const centerXPx = px(bbox.x) + p(bbox.width) / 2;
+    const centerYPx = py(bbox.y) + p(bbox.height) / 2;
     const localWPx = p(item.localWidth);
     const localHPx = p(item.localHeight);
     const tx = centerXPx - localWPx / 2;
@@ -2710,8 +2770,8 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   // unbordered hallway -- the surrounding rooms' own walls already read as
   // its boundary.
   const circulation = (result.circulation || []).map((space) => {
-    const x = margin + p(space.x);
-    const y = margin + p(space.y);
+    const x = px(space.x);
+    const y = py(space.y);
     const w = p(space.width);
     const h = p(space.height);
     return `<text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" fill="${CIRCULATION_TEXT}">${esc(space.name)}</text>`;
@@ -2723,8 +2783,8 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   // boundary. Each room's floor is a low-contrast pattern fill by room
   // type (see FLOOR_PATTERNS) instead of a flat colour.
   const roomFloors = result.rooms.map((room) => {
-    const x = margin + p(room.x);
-    const y = margin + p(room.y);
+    const x = px(room.x);
+    const y = py(room.y);
     const w = p(room.width);
     const h = p(room.height);
     return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="url(#${floorPatternIdForRoomType(room.type)})"/>`;
@@ -2740,8 +2800,8 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
     const nameSize = p(style.nameSizeM);
     const detailsSize = p(style.areaSizeM);
     const labelCenterM = computeRoomLabelCenter(room, areaText);
-    const labelCx = margin + p(labelCenterM.x);
-    const labelCyBase = margin + p(labelCenterM.y);
+    const labelCx = px(labelCenterM.x);
+    const labelCyBase = py(labelCenterM.y);
     const nameY = labelCyBase - (style.showArea ? detailsSize * 0.55 : 0);
     const areaLabelSvg = style.showArea
       ? `<text x="${labelCx}" y="${labelCyBase + nameSize * 0.65}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${detailsSize}" fill="${PLAN_INK_MUTED}">${esc(areaText)}</text>`
@@ -2754,21 +2814,25 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
     </g>`;
   }).join('');
 
-  // Overall dimension (total plot width along the top, total height along
-  // the left) with arrowheads at both ends -- the SAME geometry builder the
-  // interactive view uses (buildOverallDimensionGeometry), just scaled
-  // through this export's p()+margin instead of drawn directly in metres.
+  // Overall dimension (the BUILDING's width along the top, its height along
+  // the left -- not the whole plot) with arrowheads at both ends -- the SAME
+  // geometry builder the interactive view uses (buildOverallDimensionGeometry),
+  // just scaled through this export's p()+margin instead of drawn directly
+  // in metres.
   const overallDimensionSvg = (edge: 'top' | 'left'): string => {
-    const g = buildOverallDimensionGeometry(result.plotWidth, result.plotLength, edge);
+    const g = buildOverallDimensionGeometry(buildingBBox, edge);
     const a1 = arrowheadPoints(g.arrowStart);
     const a2 = arrowheadPoints(g.arrowEnd);
-    const X = (v: number) => margin + p(v);
-    const ln = (l: Line2D, w: number) => `<line x1="${X(l.x1)}" y1="${X(l.y1)}" x2="${X(l.x2)}" y2="${X(l.y2)}" stroke="${PLAN_INK_MUTED}" stroke-width="${w}"/>`;
-    const tri = (a: ReturnType<typeof arrowheadPoints>) => `<path d="M ${X(a.tipX)} ${X(a.tipY)} L ${X(a.b1X)} ${X(a.b1Y)} L ${X(a.b2X)} ${X(a.b2Y)} Z" fill="${PLAN_INK_MUTED}"/>`;
-    const transformAttr = g.labelRotation ? ` transform="rotate(${g.labelRotation} ${X(g.labelX)} ${X(g.labelY)})"` : '';
+    const ln = (l: Line2D, w: number) => `<line x1="${px(l.x1)}" y1="${py(l.y1)}" x2="${px(l.x2)}" y2="${py(l.y2)}" stroke="${PLAN_INK_MUTED}" stroke-width="${w}"/>`;
+    const tri = (a: ReturnType<typeof arrowheadPoints>) => `<path d="M ${px(a.tipX)} ${py(a.tipY)} L ${px(a.b1X)} ${py(a.b1Y)} L ${px(a.b2X)} ${py(a.b2Y)} Z" fill="${PLAN_INK_MUTED}"/>`;
+    const transformAttr = g.labelRotation ? ` transform="rotate(${g.labelRotation} ${px(g.labelX)} ${py(g.labelY)})"` : '';
     return `${ln(g.witnessStart, 1.1)}${ln(g.witnessEnd, 1.1)}${ln(g.mainLine, 1.6)}${tri(a1)}${tri(a2)}
-      <text x="${X(g.labelX)}" y="${X(g.labelY)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="${PLAN_INK_MUTED}"${transformAttr}>${g.label}</text>`;
+      <text x="${px(g.labelX)}" y="${py(g.labelY)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="${PLAN_INK_MUTED}"${transformAttr}>${g.label}</text>`;
   };
+
+  // Faint plot boundary -- same idea as the interactive view, visible only
+  // where it falls within this export's building-fitted canvas.
+  const plotOutlineSvg = `<rect x="${px(0)}" y="${py(0)}" width="${p(result.plotWidth)}" height="${p(result.plotLength)}" fill="none" stroke="#d6d3d1" stroke-width="1.2" stroke-dasharray="9 7"/>`;
 
   // Entry marker: same geometry builder as the interactive view
   // (buildEntryMarkerGeometry), scaled into pixel space.
@@ -2776,11 +2840,10 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
   const entryMarkerSvg = entry ? (() => {
     const g = buildEntryMarkerGeometry(entry.room, entry.door);
     const a = arrowheadPoints(g.arrowTip);
-    const X = (v: number) => margin + p(v);
-    return `<rect x="${X(g.pad.x)}" y="${X(g.pad.y)}" width="${p(g.pad.width)}" height="${p(g.pad.height)}" rx="${p(0.05)}" fill="${ENTRY_PAD_FILL}" stroke="${PLAN_INK_MUTED}" stroke-width="1"/>
-      <line x1="${X(g.arrowShaft.x1)}" y1="${X(g.arrowShaft.y1)}" x2="${X(g.arrowShaft.x2)}" y2="${X(g.arrowShaft.y2)}" stroke="${PLAN_INK_MUTED}" stroke-width="2"/>
-      <path d="M ${X(a.tipX)} ${X(a.tipY)} L ${X(a.b1X)} ${X(a.b1Y)} L ${X(a.b2X)} ${X(a.b2Y)} Z" fill="${PLAN_INK_MUTED}"/>
-      <text x="${X(g.textX)}" y="${X(g.textY)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" fill="${PLAN_INK_MUTED}">Entry</text>`;
+    return `<rect x="${px(g.pad.x)}" y="${py(g.pad.y)}" width="${p(g.pad.width)}" height="${p(g.pad.height)}" rx="${p(0.05)}" fill="${ENTRY_PAD_FILL}" stroke="${PLAN_INK_MUTED}" stroke-width="1"/>
+      <line x1="${px(g.arrowShaft.x1)}" y1="${py(g.arrowShaft.y1)}" x2="${px(g.arrowShaft.x2)}" y2="${py(g.arrowShaft.y2)}" stroke="${PLAN_INK_MUTED}" stroke-width="2"/>
+      <path d="M ${px(a.tipX)} ${py(a.tipY)} L ${px(a.b1X)} ${py(a.b1Y)} L ${px(a.b2X)} ${py(a.b2Y)} Z" fill="${PLAN_INK_MUTED}"/>
+      <text x="${px(g.textX)}" y="${py(g.textY)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" fill="${PLAN_INK_MUTED}">Entry</text>`;
   })() : '';
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
@@ -2796,6 +2859,7 @@ function createArchitecturalPlanSvg(result: FloorPlanResult): string {
     ${overallDimensionSvg('top')}
     ${overallDimensionSvg('left')}
     <rect x="${margin}" y="${margin}" width="${planW}" height="${planH}" fill="#ffffff" filter="url(#plan-shadow)"/>
+    ${plotOutlineSvg}
     ${circulation}
     ${roomFloors}
     ${wallsSvg}
