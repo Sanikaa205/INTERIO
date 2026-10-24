@@ -1231,8 +1231,8 @@ function buildRoomGraph(rooms: any[], hallways: ZoneRect[]): Map<string, Set<str
 // walking through that one bedroom. That's normal private-suite circulation,
 // not "crossing" the bedroom to reach somewhere unrelated, so a bedroom
 // grants a 2-hop budget to whatever's attached to it, then traversal stops.
-function findUnreachableRooms(rooms: any[], hallways: ZoneRect[], plotW: number, plotL: number): any[] {
-  const entry = pickEntryRoom(rooms, plotW, plotL);
+function findUnreachableRooms(rooms: any[], hallways: ZoneRect[], plotW: number, plotL: number, preferredSide?: string): any[] {
+  const entry = pickEntryRoom(rooms, plotW, plotL, preferredSide);
   if (!entry) return rooms;
   const graph = buildRoomGraph(rooms, hallways);
   const isBedroom = (id: string) => {
@@ -2107,7 +2107,8 @@ function assignDoorsGrowByAttachment(
   rooms: any[], plotW: number, plotL: number,
   masterBedId: string | undefined, suiteOnlyIds: Set<string>,
   minDoorShared: number = 1.2,
-  bedroomsHallwayOnly: boolean = false
+  bedroomsHallwayOnly: boolean = false,
+  entrySide: string = 'bottom'
 ): boolean {
   const groupOf = (r: any): AttachGroup => r._group;
   for (const room of rooms) {
@@ -2197,7 +2198,7 @@ function assignDoorsGrowByAttachment(
     room.furniture = [];
   }
 
-  ensureMainEntryDoor(rooms, plotW, plotL);
+  ensureMainEntryDoor(rooms, plotW, plotL, entrySide);
   return true;
 }
 
@@ -2221,6 +2222,7 @@ type ResolvedHint = {
   sharedBathIds: Set<string>;
   bedroomPrivacy: boolean;
   minimalCorridor: boolean;
+  hard: boolean; // enforce the user's near/away pairs at the leaf (soft variants only score them)
 };
 
 function resolveTopologyHint(hint: TopologyHint | null | undefined, requested: RoomMeta[], constraints: LayoutConstraints | null = null): ResolvedHint | null {
@@ -2262,6 +2264,7 @@ function resolveTopologyHint(hint: TopologyHint | null | undefined, requested: R
     placements, sharedBathIds,
     bedroomPrivacy: !!useConstraints?.bedroomPrivacy,
     minimalCorridor: !!useConstraints?.minimalCorridor,
+    hard: true,
   };
 }
 
@@ -2299,9 +2302,18 @@ function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide
     const inHalf = side === 'top' ? cy < plotL / 2 : side === 'bottom' ? cy > plotL / 2 : side === 'left' ? cx < plotW / 2 : cx > plotW / 2;
     score += inHalf ? 25 : -8;
   }
+  for (const id of hint.sharedBathIds) {
+    const bath = byId(id);
+    const target = bath?.doorTargetId ? byId(bath.doorTargetId) : null;
+    // A "common" bathroom that opens into a bedroom is an ensuite in disguise.
+    if (target && (target.type === 'bedroom' || target.type === 'master-bedroom')) score -= 60;
+  }
   const isPublic = (r: any) => r.type === 'living-room' || r.type === 'dining-room' || r.type === 'kitchen' || /foyer|entry/i.test(String(r.name));
   if (hint.bedroomPrivacy) {
     for (const bed of rooms.filter((r) => r.type === 'bedroom' || r.type === 'master-bedroom')) {
+      // A bedroom whose door leads into a living area breaks the privacy request.
+      const doorTarget = bed.doorTargetId ? byId(bed.doorTargetId) : null;
+      if (doorTarget && isPublic(doorTarget)) score -= 25;
       for (const other of rooms.filter(isPublic)) if (sharedWallBetween(bed, other) >= 1.0) score -= 6; // the hard rule is the door (hallway only); a shared wall alone is a mild privacy cost
     }
   }
@@ -2636,7 +2648,7 @@ function buildGrowByAttachmentCandidate(
     // The user's own "X near Y" / "X away from Y" are enforced here, so the
     // search backtracks to an arrangement that satisfies them; when none can,
     // the caller falls back to the solver's own order (soft score only).
-    if (hint) {
+    if (hint && hint.hard) {
       const at = (id: string) => arr.find((r) => r.id === id);
       for (const [x, y] of hint.strongPairs) {
         const rx = at(x); const ry = at(y);
@@ -2651,10 +2663,10 @@ function buildGrowByAttachmentCandidate(
     const circulation: Finished['circulation'] = [];
     rejectStats.capture = true;
     rejectStats.captured = null;
-    const doorsOk = assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds, doorMinShared - 0.1, !!hint?.bedroomPrivacy);
+    const doorsOk = assignDoorsGrowByAttachment(rooms, plotW, plotL, masterBed?.id, suiteOnlyIds, doorMinShared - 0.1, !!hint?.bedroomPrivacy, entrySide);
     rejectStats.capture = false;
     if (!doorsOk) { leafFail = rejectStats.captured || { gate: 'doors', reason: 'door assignment failed' }; return false; }
-    const unreachable = findUnreachableRooms(rooms, circulation, plotW, plotL);
+    const unreachable = findUnreachableRooms(rooms, circulation, plotW, plotL, entrySide);
     if (unreachable.length > 0) { leafFail = { gate: 'reach', reason: `unreachable: ${unreachable.map((r: any) => `${r.id}(${r.type})`).join(', ')}` }; return false; }
     result = { rooms, circulation };
     return true;
@@ -2933,6 +2945,11 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
       // (doors still prefer the hallway; privacy stays a scoring preference).
       built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, { ...resolvedHint, bedroomPrivacy: false }, minAreaSlack);
     }
+    if (!built && resolvedHint) {
+      // Last hinted rung: keep the user's roles (shared bathroom), entry side
+      // and score preferences, but drop the hard near/away rules.
+      built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, { ...resolvedHint, hard: false, bedroomPrivacy: false, hasTopology: false }, minAreaSlack);
+    }
     const hinted = !!built;
     if (!built) built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, null, minAreaSlack);
     if (!built) continue;
@@ -2947,6 +2964,14 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
       continue;
     }
     let score = scoreCandidate(rooms, requested, plotW, plotL, circulation, prefs, 'L');
+    {
+      // Compact footprint: unbuilt notches inside the bounding box (the ragged
+      // L/stair outlines) cost points, so tidy rectangles win ties.
+      const bx0 = Math.min(...rooms.map((r: any) => r.x)); const by0 = Math.min(...rooms.map((r: any) => r.y));
+      const bx1 = Math.max(...rooms.map((r: any) => r.x + r.width)); const by1 = Math.max(...rooms.map((r: any) => r.y + r.height));
+      const built = rooms.reduce((sum: number, r: any) => sum + r.width * r.height, 0);
+      score -= Math.max(0, (bx1 - bx0) * (by1 - by0) - built) * 0.5;
+    }
     if (resolvedHint) {
       // Reward honouring the model's required pairs (any candidate) and its
       // entry side (hinted candidates only); both are small next to the
@@ -3526,7 +3551,19 @@ function assignOpeningsForLayout(
 // only among rooms that actually have an exterior wall to put a door on.
 // If none of those three ever has one (an unusual plot), falls back to any
 // public-zone room with an exterior wall, then to any room at all with one.
-function pickEntryRoom(rooms: any[], plotW: number, plotL: number): any | null {
+function pickEntryRoom(rooms: any[], plotW: number, plotL: number, preferredSide?: string): any | null {
+  // The main entry is on the street (entry) side. A room that merely touches
+  // some other plot edge -- e.g. a foyer that ended up flush with the left
+  // boundary -- must not become the entry just because it is called "Foyer".
+  if (preferredSide) {
+    const onSide = (r: any) => isPlotExteriorSide(r, preferredSide, plotW, plotL);
+    const isNamed = (r: any) => /entry|foyer/i.test(String(r.type || '')) || /entry|foyer/i.test(String(r.name || ''));
+    const preferred = rooms.find((r) => isNamed(r) && onSide(r))
+      || rooms.find((r) => r.type === 'living-room' && onSide(r))
+      || rooms.find((r) => r.type === 'hallway' && onSide(r))
+      || rooms.find((r) => classifyZone(r.type) === 'public' && onSide(r));
+    if (preferred) return preferred;
+  }
   const hasExteriorWall = (r: any) => (['top', 'bottom', 'left', 'right'] as const).some((s) => isPlotExteriorSide(r, s, plotW, plotL));
   const isEntryNamed = (r: any) => /entry|foyer/i.test(String(r.type || '')) || /entry|foyer/i.test(String(r.name || ''));
 
@@ -3604,10 +3641,10 @@ function resolveWindowCollision(room: any, side: string, doorOffset: number, doo
 // clear any door/window already there (relocating a colliding window
 // rather than leaving it overlapped). Room positions are never touched --
 // only this one room's doors/windows arrays change.
-function ensureMainEntryDoor(rooms: any[], plotW: number, plotL: number): void {
-  const entryRoom = pickEntryRoom(rooms, plotW, plotL);
+function ensureMainEntryDoor(rooms: any[], plotW: number, plotL: number, preferredSide?: string): void {
+  const entryRoom = pickEntryRoom(rooms, plotW, plotL, preferredSide);
   if (!entryRoom) return;
-  const side = anyExteriorSide(entryRoom, plotW, plotL);
+  const side = (preferredSide && isPlotExteriorSide(entryRoom, preferredSide, plotW, plotL) ? preferredSide : null) || anyExteriorSide(entryRoom, plotW, plotL);
   if (!side) return;
 
   const wallLen = wallLengthForSide(side, entryRoom.width, entryRoom.height);

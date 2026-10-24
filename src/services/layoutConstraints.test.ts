@@ -134,3 +134,17 @@ test('retry policy: an API error moves the retry to another model without a vali
   assert.equal(calls2[1].ctx.previousWasApiError, false);
   assert.match(calls2[1].prompt, /previous reply was rejected/);
 });
+
+test('solver: the main entry is on the street side, and a "common" bathroom never opens into a bedroom', async () => {
+  const { generateFloorPlanWithTopology } = await server();
+  for (const seed of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    const plan: any = await generateFloorPlanWithTopology({ plotW: 12, plotL: 16, rooms: UI_ROOMS, userRequirements: REQUIREMENTS, variationSeed: seed, callModel: null });
+    assert.equal(plan.constraintError, undefined);
+    const entryRoom = plan.rooms.find((r: any) => (r.doors || []).some((d: any) => d.isMainEntry));
+    const entryDoor = entryRoom.doors.find((d: any) => d.isMainEntry);
+    assert.equal(entryDoor.side, 'bottom', `seed ${seed}: entry door should face the street (bottom), not ${entryDoor.side} of ${entryRoom.name}`);
+    const bath = plan.rooms.find((r: any) => r.name === 'Bathroom');
+    const target = plan.rooms.find((r: any) => r.id === bath.doorTargetId);
+    assert.ok(target && !/bedroom/.test(target.type), `seed ${seed}: the common bathroom opens into ${target?.name}`);
+  }
+});
