@@ -196,16 +196,19 @@ async function generateGeminiContentWithFallback(
     temperature?: number;
     responseMimeType?: string;
     isVision?: boolean;
+    // Overrides the default model chain / timeouts (used by floor-plan
+    // generation, which wants a stronger, slower model first).
+    attempts?: { model: string; timeoutMs: number }[];
   } = {}
 ): Promise<string> {
   // Use high-capacity flash-lite first to avoid temporary demand spikes on flash-3.8
-  const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
   // Vision (photo analysis) calls are inherently slower than text-only ones.
-  const perAttemptTimeoutMs = options.isVision ? 30000 : 20000;
+  const defaultTimeoutMs = options.isVision ? 30000 : 20000;
+  const attempts = options.attempts || ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'].map((model) => ({ model, timeoutMs: defaultTimeoutMs }));
 
   let lastError: any = null;
 
-  for (const model of modelsToTry) {
+  for (const { model, timeoutMs: perAttemptTimeoutMs } of attempts) {
     try {
       const response = await withTimeout(
         ai.models.generateContent({
@@ -412,6 +415,13 @@ app.post('/api/gemini/floorplan', async (req, res) => {
         const text = await generateGeminiContentWithFallback(ai, prompt, {
           temperature: 0.15,
           responseMimeType: 'application/json',
+          // gemini-3.5-flash is the better planner but slow (36-95s measured);
+          // the lite model is the quick fallback. Worst case ~125s, inside the
+          // client's 150s request timeout.
+          attempts: [
+            { model: 'gemini-3.5-flash', timeoutMs: 100000 },
+            { model: 'gemini-3.5-flash-lite', timeoutMs: 25000 },
+          ],
         });
         const parsed = parseJsonResponse(text);
         const validated = validateGeminiFloorPlan(parsed, width, length, roomList, cleanRequirements);
@@ -538,7 +548,7 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
 // the algorithmic fallback uses, so both paths produce geometrically
 // consistent, non-banded layouts and we never have to trust the model's
 // opinion of where an opening belongs.
-function createFloorPlanPrompt(plotW: number, plotL: number, roomList: any[], userRequirements: string): string {
+export function createFloorPlanPrompt(plotW: number, plotL: number, roomList: any[], userRequirements: string): string {
   const plotArea = roundPlan(plotW * plotL);
   const requestedRooms = roomList.map((room: any, index: number) => {
     const target = deriveTargetArea(room.type, Number(room.minSize), plotArea, roomList.length);
@@ -563,7 +573,9 @@ Zoning rules -- these matter more than any fixed room order:
 - Adjacency: an ensuite/attached bathroom must share a wall with its bedroom. The kitchen must share a wall with the dining room (or the living room if there is no dining room). Bathrooms and laundry rooms should share plumbing walls with each other where possible. The main entry should open into the living room or the hallway, never directly into a bedroom or bathroom.
 - Realistic proportions: bedrooms and living areas no more than 2:1 (longest side at most double the shortest side). Kitchens, bathrooms, and the hallway may be more elongated, up to about 2.6:1.
 - Respect minimum areas: bedrooms at least 9 m², bathrooms at least 3.5 m², kitchens at least 7 m² -- and never smaller than the minimum area listed above for that room.
-- Rooms must tile the plot with no gaps other than the one hallway/circulation rectangle: no overlaps, and nothing may extend past the plot boundary. Keep a 0.25 m exterior planning margin.
+- Size every room close to its target area: between 0.9x and 1.3x the target listed above, and never below its minimum. Do NOT stretch rooms to fill the plot -- a bathroom or powder room must stay bathroom-sized. Whatever plot area is left over stays unbuilt open yard; the built rooms plus hallway should cover roughly 40-65% of the plot, packed compactly together (no gaps between rooms) around the one hallway/circulation rectangle. Place that compact block against the bottom edge of the plot (the street side, y = ${plotL}): the living room's bottom edge must sit at y = ${roundPlan(plotL - 0.25)} (exactly 0.25 m inside the boundary, not further) because the main entry door is on that wall, and the hallway/bedroom wing should end at the same y. Put the leftover yard along the top and sides.
+- No overlaps, and nothing may extend past the plot boundary. Keep a 0.25 m exterior planning margin.
+- Reachability: every room must be enterable from the entry without walking through a bedroom. Each bedroom and each shared bathroom/powder room must share a wall (at least 1 m long) with the hallway or with the living area -- never be reachable only through another bedroom or ensuite. Use whole-metre or half-metre coordinates so rooms that should touch share an exact edge.
 - Reflect the user's written requirements in the actual geometry, not just the notes -- e.g. "open kitchen" should place the kitchen directly against the living/dining room rather than behind a hallway door, and "master far from entrance" should place the master bedroom in the corner of the private zone farthest from the hallway/entry.
 
 Return JSON only. Every coordinate is in metres from the plot's top-left corner. Include every requested room exactly once, using its exact requested name. Do not include doors, windows, walls, or furniture -- a deterministic engine derives those from your room rectangles. Do not include images, URLs, base64, or markdown.
@@ -592,14 +604,21 @@ function parseJsonResponse(text: string): any {
 // rectangles to assignOpeningsForLayout so doors/windows/walls come from one
 // shared, deterministic zoning-aware implementation rather than the model's
 // own (unverifiable) opinion of where an opening belongs.
-function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requestedRooms: any[], userRequirements: string) {
-  if (!parsed || !Array.isArray(parsed.rooms) || parsed.rooms.length !== requestedRooms.length) return null;
+export function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requestedRooms: any[], userRequirements: string) {
+  // Why a reply was thrown away (visible with DEBUG_LAYOUT=1), so a rejected
+  // Gemini plan is never a silent mystery.
+  const fail = (reason: string): null => {
+    if (process.env.DEBUG_LAYOUT) console.error(`[gemini-reject] ${reason}`);
+    return null;
+  };
+  const roomTypes = normalizeRoomTypes(requestedRooms);
+  if (!parsed || !Array.isArray(parsed.rooms) || parsed.rooms.length !== requestedRooms.length) return fail('room count mismatch / no rooms array');
 
   const byName = new Map<string, any>();
   for (const room of parsed.rooms) {
-    if (!room || typeof room !== 'object') return null;
+    if (!room || typeof room !== 'object') return fail('invalid room object');
     const key = String(room.name || '').trim().toLowerCase();
-    if (!key || byName.has(key)) return null;
+    if (!key || byName.has(key)) return fail('missing or duplicate room name');
     byName.set(key, room);
   }
 
@@ -608,18 +627,18 @@ function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requ
   for (let index = 0; index < requestedRooms.length; index++) {
     const requested = requestedRooms[index];
     const raw = byName.get(String(requested.name || '').trim().toLowerCase());
-    if (!raw) return null;
+    if (!raw) return fail(`room "${requested.name}" missing from reply`);
 
     const x = Number(raw.x);
     const y = Number(raw.y);
     const width = Number(raw.width);
     const height = Number(raw.height);
-    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return fail('non-numeric or non-positive coordinates');
 
     rawRooms.push({
       id: `room_${index + 1}`,
       name: String(requested.name),
-      type: requested.type || raw.type || 'room',
+      type: roomTypes[index] || raw.type || 'room',
       x, y, width, height,
       color: palette[index % palette.length],
     });
@@ -638,32 +657,38 @@ function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requ
     // area-fit bar instead of a looser, separate standard.
     const target = deriveTargetArea(room.type, Number(requested?.minSize), plotW * plotL, requestedRooms.length);
     const area = room.width * room.height;
-    if (area < target * 0.75 || area > target * 1.6) return null;
-    if (!hasPracticalDimensions(room) || !respectsAspectCap(room)) return null;
+    if (area < target * 0.75 || area > target * 1.6) return fail(`${room.name} area ${area.toFixed(1)}m2 outside 0.75-1.6x of target ${target.toFixed(1)}m2`);
+    if (!hasPracticalDimensions(room) || !respectsAspectCap(room)) return fail(`${room.name} ${room.width}x${room.height} fails min side / aspect cap`);
   }
 
   for (let i = 0; i < sanitized.length; i++) {
     for (let j = 0; j < i; j++) {
-      if (roomRectsOverlap(sanitized[i], sanitized[j])) return null;
+      if (roomRectsOverlap(sanitized[i], sanitized[j])) return fail(`${sanitized[i].name} (${sanitized[i].x},${sanitized[i].y},${sanitized[i].width}x${sanitized[i].height}) overlaps ${sanitized[j].name} (${sanitized[j].x},${sanitized[j].y},${sanitized[j].width}x${sanitized[j].height}) after sanitising`);
     }
   }
 
   const builtArea = sanitized.reduce((sum, room) => sum + room.width * room.height, 0);
-  if (builtArea / (plotW * plotL) < 0.45) return null;
+  // 45% of the plot, unless the requested program itself is too small to
+  // reach that within the per-room area band (e.g. 82 m2 of rooms on a 300 m2
+  // plot can never exceed ~44%) -- then require most of the program's area.
+  const programArea = requestedRooms.reduce((sum: number, r: any, i: number) => sum + deriveTargetArea(roomTypes[i], Number(r.minSize), plotW * plotL, requestedRooms.length), 0);
+  const minCoverage = Math.min(0.45, (0.6 * programArea) / (plotW * plotL));
+  if (builtArea / (plotW * plotL) < minCoverage) return fail(`built area ${(builtArea / (plotW * plotL) * 100).toFixed(0)}% below minimum coverage ${(minCoverage * 100).toFixed(0)}%`);
 
   // Gemini's rooms must pass the same stacking check the algorithmic
   // generator scores against -- a straight column of 3+ same-width rooms
   // falls back to the core-and-wings generator instead.
-  if (longestSameWidthStack(sanitized) >= 3) return null;
+  if (longestSameWidthStack(sanitized) >= 3) return fail('3+ same-width rooms stacked in a column');
 
   // At most one hallway/spine rectangle -- a corridor strip between every
   // room is exactly the banded layout this rework exists to eliminate.
   const circulationSource = Array.isArray(parsed.circulation) ? parsed.circulation.slice(0, 1) : [];
   const circulation = circulationSource.length ? normalizeCirculation(circulationSource, plotW, plotL, sanitized) : [];
-  if (circulation === null) return null;
+  if (circulation === null) return fail('hallway rectangle invalid (normalizeCirculation)');
 
   assignOpeningsForLayout(sanitized, circulation, plotW, plotL, parseLayoutPreferences(userRequirements));
-  if (countUnreachableRooms(sanitized, circulation, plotW, plotL) > 0) return null;
+  const stranded = findUnreachableRooms(sanitized, circulation, plotW, plotL);
+  if (stranded.length > 0) return fail(`unreachable rooms: ${stranded.map((r: any) => r.name).join(', ')}`);
 
   const totalBuiltArea = roundPlan(builtArea);
   const adjacencyIntent = Array.isArray(parsed.adjacencyIntent)
@@ -761,6 +786,16 @@ function normalizeCirculation(items: any, plotW: number, plotL: number, rooms: a
   if (circulation.some((item) => ![item.x, item.y, item.width, item.height].every(Number.isFinite) ||
     item.x < 0 || item.y < 0 || item.width <= 0 || item.height <= 0 ||
     item.x + item.width > plotW + 0.001 || item.y + item.height > plotL + 0.001)) return null;
+  // Same edge rounding as sanitizeRoomCoordinates, so a corridor that abuts a
+  // room at a quarter-metre coordinate doesn't round into it.
+  for (const c of circulation) {
+    const x2 = Math.round((c.x + c.width) * 10) / 10;
+    const y2 = Math.round((c.y + c.height) * 10) / 10;
+    c.x = Math.round(c.x * 10) / 10;
+    c.y = Math.round(c.y * 10) / 10;
+    c.width = Math.round((x2 - c.x) * 10) / 10;
+    c.height = Math.round((y2 - c.y) * 10) / 10;
+  }
   if (circulation.some((corridor) => rooms.some((room) => roomRectsOverlap(corridor, room)))) return null;
   return circulation;
 }
@@ -781,10 +816,13 @@ function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
     return {
       ...r,
       id: r.id || `room_${i + 1}`,
+      // Round the *edges*, not the size: a model that answers in quarter-metre
+      // coordinates (6.25 + 4.25 = 10.5) otherwise gets an abutting pair
+      // rounded apart (6.3 + 4.3 = 10.6 vs 10.4) and the rooms "overlap".
       x: Math.round(x * 10) / 10,
       y: Math.round(y * 10) / 10,
-      width: Math.round(w * 10) / 10,
-      height: Math.round(h * 10) / 10,
+      width: Math.round((Math.round((x + w) * 10) - Math.round(x * 10))) / 10,
+      height: Math.round((Math.round((y + h) * 10) - Math.round(y * 10))) / 10,
       area: Math.round(w * h * 10) / 10,
     };
   });
