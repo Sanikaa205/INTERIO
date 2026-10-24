@@ -1,9 +1,11 @@
 import React, { useMemo } from 'react';
 import type { HouseModel, WallSegment, Opening } from './model/types';
 import { makeMaterials } from './materials';
+import { useDisposables } from './useDisposables';
 
 export const Windows: React.FC<{ model: HouseModel }> = ({ model }) => {
   const materials = useMemo(makeMaterials, []);
+  useDisposables(Object.values(materials));
   return <group>{model.walls.flatMap((wall) => wall.openings.filter((opening) => opening.kind === 'window').map((opening) => {
     const width = opening.end - opening.start;
     const horizontal = wall.axis === 'x';

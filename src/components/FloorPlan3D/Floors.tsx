@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import * as THREE from 'three';
 import type { HouseModel } from './model/types';
 import { floorMaterial } from './materials';
+import { useDisposables } from './useDisposables';
 
 export const Floors: React.FC<{ model: HouseModel; focusedRoomId: string | null; onFocus: (roomId: string) => void; onClearFocus: () => void }> = ({ model, focusedRoomId, onFocus, onClearFocus }) => {
   const materials = useMemo(() => new Map(model.floors.map((floor) => {
@@ -12,6 +13,7 @@ export const Floors: React.FC<{ model: HouseModel; focusedRoomId: string | null;
     }
     return [floor.roomId, material] as const;
   })), [model, focusedRoomId]);
+  useDisposables([...materials.values()]);
   return (
     <group>
       {model.floors.map((floor) => (

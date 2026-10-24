@@ -5,9 +5,11 @@ import type { HouseModel } from './model/types';
 import { wallPieces } from './model/wallPieces';
 import { makeMaterials } from './materials';
 import { wallFacesCamera } from './model/cutaway';
+import { useDisposables } from './useDisposables';
 
 export const Walls: React.FC<{ model: HouseModel; cutaway: boolean }> = ({ model, cutaway }) => {
   const materials = useMemo(makeMaterials, []);
+  useDisposables(Object.values(materials));
   const pieces = useMemo(() => model.walls.flatMap((wall) => wallPieces(wall).map((piece) => ({ wall, piece }))), [model]);
   const meshes = useRef<Array<THREE.Mesh | null>>([]);
   const { camera } = useThree();

@@ -11,9 +11,10 @@ interface CameraRigProps {
   focusedRoomId: string | null;
   resetToken: number;
   enabled?: boolean;
+  onInteraction?: () => void;
 }
 
-export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, resetToken, enabled = true }) => {
+export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, resetToken, enabled = true, onInteraction }) => {
   const controls = useRef<React.ElementRef<typeof OrbitControls>>(null);
   const { camera, size, invalidate } = useThree();
   const target = useRef(new THREE.Vector3());
@@ -70,6 +71,8 @@ export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, rese
     if (!controls.current) return;
     controls.current.target.x = THREE.MathUtils.clamp(controls.current.target.x, model.bounds.minX, model.bounds.maxX);
     controls.current.target.z = THREE.MathUtils.clamp(controls.current.target.z, model.bounds.minZ, model.bounds.maxZ);
+    onInteraction?.();
+    invalidate();
   };
 
   return (
@@ -82,6 +85,7 @@ export const CameraRig: React.FC<CameraRigProps> = ({ model, focusedRoomId, rese
       maxPolarAngle={Math.PI / 2 - 0.05}
       enableDamping
       panSpeed={0.65}
+      touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }}
       onChange={clampTarget}
     />
   );

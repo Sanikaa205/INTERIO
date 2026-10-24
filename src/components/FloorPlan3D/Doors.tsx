@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import type { HouseModel, WallSegment, Opening } from './model/types';
 import { DOOR_HEIGHT, WALL_HEIGHT } from './model/constants';
 import { makeMaterials } from './materials';
+import { useDisposables } from './useDisposables';
 
 function openingPosition(wall: WallSegment, opening: Opening, y: number, inset = 0): [number, number, number] {
   const along = (opening.start + opening.end) / 2;
@@ -11,6 +12,7 @@ function openingPosition(wall: WallSegment, opening: Opening, y: number, inset =
 
 export const Doors: React.FC<{ model: HouseModel }> = ({ model }) => {
   const materials = useMemo(makeMaterials, []);
+  useDisposables(Object.values(materials));
   return <group>{model.walls.flatMap((wall) => wall.openings.filter((opening) => opening.kind === 'door').map((opening) => {
     const width = opening.end - opening.start;
     const horizontal = wall.axis === 'x';

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ArrowLeft, BookmarkPlus, Home } from 'lucide-react';
@@ -17,6 +17,11 @@ import { exportHouseGlb } from './exportGlb';
 import { Walkthrough } from './Walkthrough';
 import { VirtualJoystick } from './VirtualJoystick';
 import { useWalkInput, type WalkInput } from './useWalkInput';
+import { useContainerSize } from './useContainerSize';
+import { BottomSheet } from './BottomSheet';
+import { FallbackNotice } from './FallbackNotice';
+import { isWebGLAvailable } from './webgl';
+import { RendererDiagnostics } from './RendererDiagnostics';
 
 interface FloorPlan3DProps {
   plan: FloorPlanResult;
@@ -24,6 +29,13 @@ interface FloorPlan3DProps {
   onBack: () => void;
   onBackToHome: () => void;
   onSaveProject: () => void;
+}
+
+class CanvasErrorBoundary extends Component<{ children: React.ReactNode; onError: () => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } { return { failed: true }; }
+  componentDidCatch(): void { this.props.onError(); }
+  render(): React.ReactNode { return this.state.failed ? null : this.props.children; }
 }
 
 export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
@@ -42,6 +54,12 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   const [exportError, setExportError] = useState<string | null>(null);
   const [mode, setMode] = useState<'orbit' | 'walk'>('orbit');
   const [showWalkHint, setShowWalkHint] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [webglFailed, setWebglFailed] = useState(() => !isWebGLAvailable());
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const size = useContainerSize(container);
+  const isSmall = size.width > 0 && size.width < 820;
+  const [contextLost, setContextLost] = useState(false);
   const inputRef = useRef<WalkInput>({ forward: 0, strafe: 0, run: false });
   const orbitSettings = useRef({ ceilings: false, cutaway: false });
   const houseRef = useRef<THREE.Group>(null);
@@ -73,6 +91,15 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
     setShowCeilings(orbitSettings.current.ceilings);
     setCutaway(orbitSettings.current.cutaway);
   };
+  useEffect(() => {
+    if (!container) return;
+    const lost = () => {
+      setContextLost(true);
+      setWebglFailed(true);
+    };
+    container.addEventListener('webglcontextlost', lost);
+    return () => container.removeEventListener('webglcontextlost', lost);
+  }, [container]);
   return (
     <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
       {/* Top Floating Control Bar */}
@@ -124,7 +151,7 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
       </div>
 
       {/* 3D Canvas */}
-      <div className="relative w-full h-full rounded-lg">
+      <div ref={setContainer} className="relative w-full h-[70vh] min-h-[320px] max-h-[720px] rounded-lg md:h-[560px]" style={{ touchAction: 'none' }} onDoubleClick={resetView}>
         <Toolbar
           showCeilings={showCeilings}
           cutaway={cutaway}
@@ -139,13 +166,35 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
           mode={mode}
           onWalk={enterWalk}
           onExitWalk={exitWalk}
+          isSmall={isSmall}
+          onOpenControls={() => setControlsOpen(true)}
+        />
+        <BottomSheet
+          open={controlsOpen && isSmall}
+          onClose={() => setControlsOpen(false)}
+          showCeilings={showCeilings}
+          cutaway={cutaway}
+          labels={showLabels}
+          night={night}
+          mode={mode}
+          onCeilings={() => setShowCeilings((visible) => !visible)}
+          onCutaway={() => setCutaway((visible) => !visible)}
+          onLabels={() => setShowLabels((visible) => !visible)}
+          onNight={() => setNight((value) => !value)}
+          onReset={resetView}
+          onExport={exportGlb}
+          onWalk={enterWalk}
+          onExitWalk={exitWalk}
         />
         {mode === 'walk' && showWalkHint && <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 rounded-lg bg-stone-900/85 px-4 py-2 text-center text-xs text-white pointer-events-none">WASD to move · drag/mouse to look · Esc to exit</div>}
+        {mode === 'walk' && isSmall && <button className="absolute right-3 top-3 z-20 min-h-11 rounded-lg bg-stone-900/90 px-4 text-sm font-medium text-white shadow-lg" onClick={exitWalk}>Exit walk</button>}
         {mode === 'walk' && <VirtualJoystick inputRef={inputRef} />}
         {exportError && <div className="absolute bottom-3 left-3 z-10 rounded bg-red-900/90 px-3 py-1.5 text-xs text-red-100">{exportError}</div>}
-        <Canvas camera={{ fov: 50 }} onPointerMissed={resetView}>
+        {webglFailed ? <FallbackNotice onBack={onBack} onRetry={() => { setContextLost(false); setWebglFailed(!isWebGLAvailable()); }} /> : <CanvasErrorBoundary onError={() => setWebglFailed(true)}>
+        <Canvas frameloop={mode === 'walk' ? 'always' : 'demand'} dpr={[1, Math.min(typeof window === 'undefined' ? 1 : window.devicePixelRatio, isSmall ? 1.5 : 2)]} gl={{ antialias: !isSmall, powerPreference: 'high-performance' }} camera={{ fov: 50 }} onPointerMissed={resetView}>
           <color attach="background" args={[night ? '#07101f' : '#b9d9f2']} />
-          <Lighting model={model} night={night} />
+          <RendererDiagnostics />
+          <Lighting model={model} night={night} isSmall={isSmall} />
           <group ref={houseRef} onClick={(event) => event.stopPropagation()}>
             <Floors model={model} focusedRoomId={focusedRoomId} onFocus={setFocusedRoomId} onClearFocus={resetView} />
             <Walls model={model} cutaway={cutaway} />
@@ -154,9 +203,10 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
             {showCeilings && <Ceilings model={model} />}
           </group>
           {showLabels && <RoomLabels model={model} />}
-          <CameraRig model={model} focusedRoomId={focusedRoomId} resetToken={resetToken} enabled={mode === 'orbit'} />
+          <CameraRig model={model} focusedRoomId={focusedRoomId} resetToken={resetToken} enabled={mode === 'orbit'} onInteraction={() => {}} />
           {mode === 'walk' && <Walkthrough model={model} inputRef={inputRef} onExit={exitWalk} />}
         </Canvas>
+        </CanvasErrorBoundary>}
       </div>
     </div>
   );
