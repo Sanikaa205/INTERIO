@@ -48,8 +48,7 @@ async function main() {
   const checkpoint = `scripts/harness-results/${mode}-checkpoint.jsonl`;
   if (process.env.HARNESS_FRESH === '1' && fs.existsSync(checkpoint)) fs.unlinkSync(checkpoint);
   if (fs.existsSync(checkpoint)) {
-    for (const line of fs.readFileSync(checkpoint, 'utf8').split('
-').filter(Boolean)) results.push(JSON.parse(line));
+    for (const line of fs.readFileSync(checkpoint, 'utf8').split('\n').filter(Boolean)) results.push(JSON.parse(line));
     realError(`resuming: ${results.length} of ${jobs.length} jobs already done`);
   }
   const doneKeys = new Set(results.map((r) => `${r.plot}#${r.i}`));
@@ -97,8 +96,7 @@ async function main() {
     }
     rec.latencyMs = Date.now() - t0;
     results.push(rec);
-    fs.appendFileSync(checkpoint, JSON.stringify(rec) + '
-');
+    fs.appendFileSync(checkpoint, JSON.stringify(rec) + '\n');
     realError(`${rec.plot} #${rec.i} ${rec.accepted ? 'OK' : 'REJECT'} ${rec.latencyMs}ms ${rec.reason ? '- ' + String(rec.reason).slice(0, 90) : ''}`);
   }
 
