@@ -2321,7 +2321,7 @@ function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide
     for (const bed of rooms.filter((r) => r.type === 'bedroom' || r.type === 'master-bedroom')) {
       // A bedroom whose door leads into a living area breaks the privacy request.
       const doorTarget = bed.doorTargetId ? byId(bed.doorTargetId) : null;
-      if (doorTarget && isPublic(doorTarget)) score -= 25;
+      if (doorTarget && isPublic(doorTarget)) score -= 120;
       for (const other of rooms.filter(isPublic)) if (sharedWallBetween(bed, other) >= 1.0) score -= 6; // the hard rule is the door (hallway only); a shared wall alone is a mild privacy cost
     }
   }
@@ -3003,7 +3003,7 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
       const bx0 = Math.min(...rooms.map((r: any) => r.x)); const by0 = Math.min(...rooms.map((r: any) => r.y));
       const bx1 = Math.max(...rooms.map((r: any) => r.x + r.width)); const by1 = Math.max(...rooms.map((r: any) => r.y + r.height));
       const built = rooms.reduce((sum: number, r: any) => sum + r.width * r.height, 0);
-      score -= Math.max(0, (bx1 - bx0) * (by1 - by0) - built) * 0.5;
+      score -= Math.max(0, (bx1 - bx0) * (by1 - by0) - built) * 1.2;
     }
     if (resolvedHint) {
       // Reward honouring the model's required pairs (any candidate) and its
