@@ -67,7 +67,7 @@ export const TOPOLOGY_RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ['entrySide', 'rooms', 'attachmentOrder', 'adjacencyPairs'],
+  required: ['entrySide', 'attachmentOrder', 'adjacencyPairs'],
 } as const;
 
 // Optional block: what the USER asked for in words. Kept out of `required` so a
@@ -108,8 +108,8 @@ export function validateTopology(raw: unknown, program: ProgramRoom[]): Topology
   const r = raw as Record<string, any>;
 
   if (!ENTRY_SIDES.includes(r.entrySide)) return fail(`entrySide must be one of ${ENTRY_SIDES.join(', ')}`);
-  if (!Array.isArray(r.rooms) || !Array.isArray(r.attachmentOrder) || !Array.isArray(r.adjacencyPairs)) {
-    return fail('rooms, attachmentOrder and adjacencyPairs must all be arrays');
+  if (!Array.isArray(r.attachmentOrder) || !Array.isArray(r.adjacencyPairs)) {
+    return fail('attachmentOrder and adjacencyPairs must both be arrays');
   }
 
   const byName = new Map<string, ProgramRoom>();
@@ -119,7 +119,9 @@ export function validateTopology(raw: unknown, program: ProgramRoom[]): Topology
   // Zoning: each program room exactly once, with its own type and a valid zone.
   const zones: TopologyHint['zones'] = [];
   const seenZoned = new Set<string>();
-  for (const z of r.rooms) {
+  // The zoning list is optional; when the model sends one it must be complete and consistent.
+  const zoningSent = Array.isArray(r.rooms) && r.rooms.length > 0;
+  for (const z of zoningSent ? r.rooms : []) {
     const name = canonical(z?.name);
     if (!name) return fail(`rooms: unknown room "${z?.name}" (use the exact requested names)`);
     if (seenZoned.has(key(name))) return fail(`rooms: "${name}" listed more than once`);
@@ -131,7 +133,12 @@ export function validateTopology(raw: unknown, program: ProgramRoom[]): Topology
     if (z.zone !== 'public' && z.zone !== 'private') return fail(`rooms: "${name}" zone must be public or private`);
     zones.push({ name, type: expectedType, zone: z.zone });
   }
-  for (const p of program) if (!seenZoned.has(key(p.name))) return fail(`rooms: "${p.name}" is missing`);
+  if (zoningSent) {
+    for (const p of program) if (!seenZoned.has(key(p.name))) return fail(`rooms: "${p.name}" is missing`);
+  } else {
+    const PUBLIC = new Set(['living-room', 'dining-room', 'kitchen', 'hallway', 'balcony']);
+    for (const p of program) zones.push({ name: p.name, type: p.type, zone: PUBLIC.has(p.type) ? 'public' : 'private' });
+  }
 
   // Attachment order: each room exactly once; attachTo is earlier room or token.
   const order: TopologyHint['attachmentOrder'] = [];
@@ -166,7 +173,7 @@ export function validateTopology(raw: unknown, program: ProgramRoom[]): Topology
     const a = canonical(pair?.a);
     const b = canonical(pair?.b);
     if (!a || !b) return fail(`adjacencyPairs: unknown room in ("${pair?.a}", "${pair?.b}")`);
-    if (key(a) === key(b)) return fail(`adjacencyPairs: "${a}" paired with itself`);
+    if (key(a) === key(b)) continue; // a room "paired with itself" carries no information; drop it, don't reject the reply
     const pk = [key(a), key(b)].sort().join('|');
     if (seenPairs.has(pk)) continue;
     seenPairs.add(pk);
@@ -226,11 +233,10 @@ ${userRequirements || 'None. Use a practical residential entry, one circulation 
 
 Decide:
 1. entrySide: which plot side the main entry / public side is on (bottom, top, left or right). Use "bottom" unless the requirements say otherwise.
-2. rooms: for every room, give its exact name and mark it public or private. Public = living, dining, kitchen, entry. Private = bedrooms, bathrooms, study, laundry.
-3. attachmentOrder: the sequence in which rooms are placed, one entry per room (all ${program.length} rooms). attachTo is either a room that appears EARLIER in the sequence, or "ENTRY" (attaches at the entry), or "HALLWAY" (attaches to the circulation hallway that links the public and private zones). Start with the public rooms attached to ENTRY. An ensuite attaches to its bedroom. Bedrooms and shared bathrooms attach to HALLWAY. The kitchen attaches to the living or dining room.
-4. adjacencyPairs: pairs of rooms that must share a wall, e.g. a master bedroom with its ensuite, the kitchen with the dining/living room, wet rooms that can share plumbing.
+2. attachmentOrder: the sequence in which rooms are placed, one entry per room (all ${program.length} rooms). attachTo is either a room that appears EARLIER in the sequence, or "ENTRY" (attaches at the entry), or "HALLWAY" (attaches to the circulation hallway that links the public and private zones). Start with the public rooms attached to ENTRY. An ensuite attaches to its bedroom. Bedrooms and shared bathrooms attach to HALLWAY. The kitchen attaches to the living or dining room.
+3. adjacencyPairs: pairs of rooms that must share a wall, e.g. a master bedroom with its ensuite, the kitchen with the dining/living room, wet rooms that can share plumbing.
 
-5. constraints (optional): read the USER REQUIREMENTS above and record only what they actually ask for -- adjacentPairs (rooms the user wants next to each other, e.g. "common bathroom near the second bedroom"), avoidPairs (rooms the user wants kept apart, e.g. "bedrooms away from the kitchen"), placements (a room toward the front/back/left/right of the plot; "front" is the entry side), sharedBathrooms (a bathroom the user calls common/shared/guest, i.e. NOT the master's ensuite), and the flags minimalCorridor, bedroomPrivacy, naturalLight. Leave anything the user did not ask for empty or false. Do not invent requirements.
+4. constraints (optional): read the USER REQUIREMENTS above and record only what they actually ask for -- adjacentPairs (rooms the user wants next to each other, e.g. "common bathroom near the second bedroom"), avoidPairs (rooms the user wants kept apart, e.g. "bedrooms away from the kitchen"), placements (a room toward the front/back/left/right of the plot; "front" is the entry side), sharedBathrooms (a bathroom the user calls common/shared/guest, i.e. NOT the master's ensuite), and the flags minimalCorridor, bedroomPrivacy, naturalLight. Leave anything the user did not ask for empty or false. Do not invent requirements.
 
 Allowed room names: ${names}.
 Return JSON only, matching the response schema. No coordinates, sizes, doors or markdown.${previousError ? `

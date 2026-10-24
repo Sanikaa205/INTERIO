@@ -54,7 +54,6 @@ test('topology schema: rejects each kind of invalid reply with a specific error'
     ['order repeats a room', (t) => { t.attachmentOrder[1].room = 'Living Room'; }, /more than once/],
     ['attach to a later room', (t) => { t.attachmentOrder[1].attachTo = 'Powder Room'; }, /not been placed yet/],
     ['attach to an unknown room', (t) => { t.attachmentOrder[1].attachTo = 'Garage'; }, /unknown "Garage"/],
-    ['pair with itself', (t) => { t.adjacencyPairs[0] = { a: 'Kitchen & Dining', b: 'Kitchen & Dining' }; }, /with itself/],
     ['pair with unknown room', (t) => { t.adjacencyPairs[0].b = 'Pool'; }, /adjacencyPairs: unknown room/],
   ];
   for (const [label, mutate, expected] of cases) {
@@ -139,4 +138,12 @@ test('no Gemini configured (callModel null) -> solver alone, no attempts, no err
   const plan: any = await generateFloorPlanWithTopology({ plotW: 12, plotL: 15, rooms: UI_PROGRAM, callModel: null });
   assert.equal(plan.constraintError, undefined);
   assert.equal(plan.topologyAttempts, 0);
+});
+
+test('topology schema: a room paired with itself is dropped, not a reason to reject the reply', () => {
+  const t = validTopology();
+  t.adjacencyPairs.push({ a: 'Living Room', b: 'Living Room' });
+  const v: any = validateTopology(t, NORMALISED);
+  assert.equal(v.ok, true);
+  assert.equal(v.hint.adjacencyPairs.length, 2);
 });

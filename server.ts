@@ -2745,7 +2745,7 @@ const TOPOLOGY_MODELS = () => [
   process.env.GEMINI_TOPOLOGY_MODEL || 'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
 ];
-const TOPOLOGY_TIMEOUT_MS = 7000;
+const TOPOLOGY_TIMEOUT_MS = 15000;
 
 function defaultTopologyCaller(): TopologyModelCaller | null {
   const ai = getGeminiClient();
@@ -2784,6 +2784,7 @@ export async function requestTopologyHint(params: {
   let previousError: string | undefined;
   let previousWasApiError = false;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const attemptStartedAt = Date.now();
     try {
       // After an API error there is no validation error to report back.
       const text = await callModel(
@@ -2801,18 +2802,23 @@ export async function requestTopologyHint(params: {
     }
     errors.push(previousError!);
     if (process.env.DEBUG_LAYOUT) console.error(`[topology] attempt ${attempt} failed: ${previousError}`);
+    // A call that burned its whole timeout will most likely do it again: go
+    // straight to the solver instead of making the user wait twice. Quick
+    // failures (503/429, a bad reply) are worth the one retry.
+    if (previousWasApiError && Date.now() - attemptStartedAt >= TOPOLOGY_TIMEOUT_MS - 500) return { hint: null, attempts: attempt, errors };
   }
   return { hint: null, attempts: 2, errors };
 }
 
-// Gemini's latency is hidden behind the solver run, but it must not hold the
-// response hostage: after the solver pass we wait only up to this long overall.
-const TOPOLOGY_DEADLINE_MS = 9000;
+// How long the plan waits for Gemini's topology (both tries). The solver runs
+// AFTER this, not alongside it: the solver is synchronous CPU work, and while it
+// runs the event loop cannot deliver the HTTP response -- a reply that arrived
+// in 3s was still "timed out" by the time the 9s solver released the loop.
+const TOPOLOGY_DEADLINE_MS = 22000;
 
 export async function generateFloorPlanWithTopology(params: {
   plotW: number; plotL: number; rooms: any[]; userRequirements?: string; variationSeed?: string; callModel?: TopologyModelCaller | null;
 }) {
-  const startedAt = Date.now();
   const requirements = params.userRequirements || '';
   const seed = params.variationSeed || '';
 
@@ -2822,36 +2828,21 @@ export async function generateFloorPlanWithTopology(params: {
   const program = params.rooms.map((r: any, i: number) => ({ name: String(r.name || `Room ${i + 1}`).slice(0, 80), type: types[i] }));
   const localConstraints = parseRequirementsLocally(requirements, program);
 
-  // Start the model request first, then run the full solver while it is in
-  // flight (the request is I/O, the solver is CPU), so Gemini's latency is
-  // hidden behind the solver's. The solver-alone plan (with the locally
-  // parsed constraints) is both the fallback and the baseline to beat.
-  const topologyRequest = requestTopologyHint({
-    plotW: params.plotW, plotL: params.plotL, rooms: params.rooms, userRequirements: requirements, callModel: params.callModel,
-  });
-  const solverPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, null, 60, localConstraints);
-
-  const waitMs = Math.max(0, TOPOLOGY_DEADLINE_MS - (Date.now() - startedAt));
   const timedOut = Symbol('timeout');
   const outcome: any = await Promise.race([
-    topologyRequest,
-    new Promise((resolve) => setTimeout(() => resolve(timedOut), waitMs)),
+    requestTopologyHint({ plotW: params.plotW, plotL: params.plotL, rooms: params.rooms, userRequirements: requirements, callModel: params.callModel }),
+    new Promise((resolve) => setTimeout(() => resolve(timedOut), TOPOLOGY_DEADLINE_MS)),
   ]);
   const { hint, attempts, errors } = outcome === timedOut
     ? { hint: null as TopologyHint | null, attempts: 1, errors: [`no reply within ${Math.round(TOPOLOGY_DEADLINE_MS / 1000)}s`] }
     : outcome as { hint: TopologyHint | null; attempts: number; errors: string[] };
   if (!hint && errors.length) console.warn(`[INTERIO Layout] Gemini topology unavailable (${errors[errors.length - 1]}); using the solver alone.`);
 
-  let plan = solverPlan;
-  if (hint) {
-    // Hinted pass: fewer candidates than the full solver run (the model's
-    // order narrows the search); keep it only if it solves and scores at
-    // least as well. A hinted candidate that can't be satisfied falls back to
-    // the solver's own order inside the pass.
-    const merged = mergeConstraints(localConstraints, hint.constraints);
-    const hintedPlan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, hint, 16, merged);
-    if (!hintedPlan.constraintError && (solverPlan.constraintError || hintedPlan.layoutScore >= solverPlan.layoutScore)) plan = hintedPlan;
-  }
+  // One solver run. With a hint, every candidate is tried hinted first and
+  // falls back (ladder) to the solver's own order, so the solver-alone result is
+  // never worse off than before; without one, the local constraints still apply.
+  const constraints = hint ? mergeConstraints(localConstraints, hint.constraints) : localConstraints;
+  const plan: any = generateAlgorithmicFloorPlan(params.plotW, params.plotL, params.rooms, requirements, seed, false, hint, 60, constraints);
   return { ...plan, topologyHintUsed: !!hint && plan.layoutSource === 'topology-hinted', topologyHintReceived: !!hint, topologyAttempts: attempts, topologyErrors: errors };
 }
 
