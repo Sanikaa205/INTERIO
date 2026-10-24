@@ -2135,6 +2135,8 @@ function assignDoorsGrowByAttachment(
       // rather than to a bedroom dead end; the private wing stays reachable.
       allowed = touchesCore ? coreTargets : rooms.filter((r) => groupOf(r) === 'kitchen' || groupOf(r) === 'core');
       if (!allowed.some((r) => findTouchingSide(room, r))) allowed = rooms.filter((r) => r !== room);
+      // A second corridor segment doors into the first hallway (never a bedroom).
+      if (room.id === 'auto_hallway2') allowed = rooms.filter((r) => groupOf(r) === 'hallway' && r !== room);
     } else {
       allowed = rooms.filter((r) => r !== room);
     }
@@ -2217,7 +2219,8 @@ type ResolvedHint = {
   attachTo: Map<string, string>; // room id -> room id | 'ENTRY' | 'HALLWAY'
   pairs: [string, string][]; // soft: the model's suggested pairs
   strongPairs: [string, string][]; // the user's own "X near Y"
-  avoid: [string, string][];
+  avoid: [string, string][]; // hard
+  softAvoid: [string, string][]; // scored only
   placements: { id: string; side: RelSide }[];
   sharedBathIds: Set<string>;
   bedroomPrivacy: boolean;
@@ -2260,7 +2263,8 @@ function resolveTopologyHint(hint: TopologyHint | null | undefined, requested: R
     orderIndex, attachTo,
     pairs: toIdPairs(hint?.adjacencyPairs),
     strongPairs: toIdPairs(useConstraints?.adjacent),
-    avoid: toIdPairs(useConstraints?.avoid),
+    avoid: toIdPairs((useConstraints?.avoid || []).filter((p) => !p.soft)),
+    softAvoid: toIdPairs((useConstraints?.avoid || []).filter((p) => p.soft)),
     placements, sharedBathIds,
     bedroomPrivacy: !!useConstraints?.bedroomPrivacy,
     minimalCorridor: !!useConstraints?.minimalCorridor,
@@ -2291,6 +2295,10 @@ function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide
     const ra = byId(a); const rb = byId(b);
     if (ra && rb && sharedWallBetween(ra, rb) >= 0.3) score -= 40;
   }
+  for (const [a, b] of hint.softAvoid) {
+    const ra = byId(a); const rb = byId(b);
+    if (ra && rb && sharedWallBetween(ra, rb) >= 0.3) score -= 18;
+  }
   // front = the entry side of THIS layout, back = the opposite one.
   const opposite: Record<string, string> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
   for (const p of hint.placements) {
@@ -2318,8 +2326,10 @@ function scoreConstraints(rooms: any[], hint: ResolvedHint, entrySide: EntrySide
     }
   }
   if (hint.minimalCorridor) {
-    const hall = rooms.find((r) => r.type === 'hallway' && !/foyer|entry/i.test(String(r.name)));
-    if (hall) score -= hall.width * hall.height * 1.5;
+    const hallArea = rooms
+      .filter((r) => r.type === 'hallway' && !/foyer|entry/i.test(String(r.name)))
+      .reduce((sum, r) => sum + r.width * r.height, 0);
+    score -= hallArea * 1.5;
   }
   // Natural light is always a mild preference: habitable rooms on an exterior wall.
   for (const r of rooms.filter((x) => isHabitableRoomType(x.type))) {
@@ -2397,10 +2407,19 @@ function buildGrowByAttachmentCandidate(
     };
   }
 
+  // A single straight hallway (aspect cap 2.6) has two long sides and an end:
+  // room for about three large rooms. A 3-bedroom plan needs more frontage than
+  // that, so add a second corridor segment off the first rather than strand a
+  // bedroom or push its door into the living area.
+  const frontageNeed = (masterBed ? 1 : 0) + otherBedrooms.length + sharedBaths.length;
+  const hallway2: RoomMeta | undefined = hallwayRoom && frontageNeed >= 4
+    ? { id: 'auto_hallway2', name: 'Corridor', type: 'hallway', targetArea: 6.5 }
+    : undefined;
+
   // Frontage the hallway must offer: bedrooms and shared baths may only door
   // onto it (or the core), roughly 1.5m of wall each across its two long
   // sides plus an end, so a stub hallway strands them. Size the spine to it.
-  const hallwayFrontageRooms = (masterBed ? 1 : 0) + otherBedrooms.length + sharedBaths.length;
+  const hallwayFrontageRooms = Math.ceil(frontageNeed / (hallway2 ? 2 : 1));
   // Capped at 5.4m: the hallway must also stay >=2.1m wide (min side) within its 2.6 aspect cap.
   // Hallway width scales with plot size: 2.1m on a roomy plot (net >= 200 m2)
   // down to 1.5m (the practical minimum) on a tight one (net <= 110 m2), since
@@ -2413,6 +2432,7 @@ function buildGrowByAttachmentCandidate(
 
   const targetAreaById = new Map(requested.map((r) => [r.id, r.targetArea]));
   if (hallwayRoom) targetAreaById.set(hallwayRoom.id, hallwayRoom.targetArea);
+  if (hallway2) targetAreaById.set(hallway2.id, hallway2.targetArea);
 
   const placed: (ZoneRect & { id: string; name: string; type: string; color: string; _group: AttachGroup })[] = [];
   const sizeCache = new Map<string, { width: number; height: number }>();
@@ -2445,11 +2465,14 @@ function buildGrowByAttachmentCandidate(
   // stranded against other bedrooms/baths.
   const doorTargetsFor = (room: RoomMeta): ((p: any) => boolean) | null => {
     if (room.id === masterBath?.id || room.id === walkIn?.id) return masterBed ? (p) => p.id === masterBed.id : null;
+    if (room.id === hallway2?.id) return (p) => p.id === hallwayRoom?.id;
     if (room.type === 'bedroom' || room.type === 'master-bedroom') {
       // Bedroom privacy: doors onto the hallway only (never the living areas).
       return hint?.bedroomPrivacy && hallwayRoom ? (p) => p._group === 'hallway' : (p) => p._group === 'hallway' || p._group === 'core';
     }
     if (room.type === 'bathroom') return (p) => p._group === 'hallway' || (!hallwayRoom && p._group === 'core');
+    // The kitchen must open into the core (assignDoors enforces it); filter at placement so the search never builds a kitchen that cannot get a door.
+    if (room.type === 'kitchen') return (p) => p._group === 'core';
     return null;
   };
   // Shared wall a door target needs: 1.3m on a roomy plot down to 0.9m (a door
@@ -2528,6 +2551,7 @@ function buildGrowByAttachmentCandidate(
               pairBonus(hint.pairs, 20);
               pairBonus(hint.strongPairs, 35);
               pairBonus(hint.avoid, -35);
+              pairBonus(hint.softAvoid, -15);
             }
             legal.push({ x, y, score });
           }
@@ -2570,6 +2594,7 @@ function buildGrowByAttachmentCandidate(
   const kitchenSlot = Math.floor(rng() * 3); // 0: first, 1: after the master suite, 2: after all bedrooms/baths
   if (kitchenSlot === 0) addStep(kitchen, 'kitchen', ['core']);
   addStep(hallwayRoom, 'hallway', ['core']);
+  addStep(hallway2, 'hallway', ['hallway']);
   addStep(masterBed, 'master-suite', hallwayPref);
   addStep(masterBath, 'master-suite', ['master-suite']);
   addStep(walkIn, 'master-suite', ['master-suite']);
@@ -2903,7 +2928,10 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
   let circulationFactor = 1.12;
   if (initialCoverage < 0.45) {
     const desiredRequiredArea = netAreaForCoverage * 0.55; // middle of the 45-70% target band
-    const growth = Math.min(3, desiredRequiredArea / Math.max(1, initialRequiredArea));
+    // Capped at 1.3x: rooms ballooning to 1.5-3x the typed minimum (a 26 m2 living
+    // room at 40 m2) made big programs unpackable (10/60 candidates) and the plan
+    // sprawl; 1.3x packs 2-3x more candidates and leaves the rest as open yard.
+    const growth = Math.min(1.3, desiredRequiredArea / Math.max(1, initialRequiredArea));
     for (const room of requested) {
       const range = AREA_RANGES[room.type] || DEFAULT_AREA_RANGE;
       room.targetArea = Math.min(range[1] * 1.5, room.targetArea * growth);
@@ -2925,6 +2953,8 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
   let hintedPassed = 0;
   const GROW_CANDIDATE_COUNT = candidateCount;
   let growPassed = 0;
+  const rungWins = [0, 0, 0];
+  const growStartedAt = Date.now();
   // The user's minimum areas are enforced strictly first. Only when NO layout
   // can honour them on this plot do we allow a small shortfall (6%, then 12%),
   // and the plan says which rooms came out under their minimum.
@@ -2934,23 +2964,35 @@ export function generateAlgorithmicFloorPlan(plotW: number, plotL: number, reque
   rejectStats.byGate.clear(); rejectStats.byReason.clear();
   growPassed = 0; hintedPassed = 0;
   for (let i = 0; i < GROW_CANDIDATE_COUNT; i++) {
+    // Time budget: a big program on a big plot can take many seconds; once a
+    // dozen candidates are in and one works, stop searching (the solver is
+    // synchronous and blocks other requests while it runs).
+    if (best && i >= 16 && Date.now() - growStartedAt > 9000) break;
     const candidateSeed = hashSeed(`${seedStr}|grow|${i}`) ^ Math.floor(baseRng() * 0xffffffff);
     const candidateRng = mulberry32(candidateSeed >>> 0);
     rejectStats.cand = i;
     // Try the topology-hinted order first; if the DFS cannot satisfy it, fall
     // back to the solver's own order for this same candidate (same seed).
-    let built = resolvedHint ? buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, candidateRng, palette, resolvedHint, minAreaSlack) : null;
-    if (!built && resolvedHint?.bedroomPrivacy) {
+    // After a few candidates, don't keep paying for a rung that has never
+    // produced a layout (e.g. hard privacy on a plot that can't hold it).
+    const skipFull = i >= 8 && rungWins[0] === 0;
+    const skipRelaxed = i >= 8 && rungWins[0] + rungWins[1] === 0;
+    let rung = 0;
+    let built = resolvedHint && !skipFull ? buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, candidateRng, palette, resolvedHint, minAreaSlack) : null;
+    if (!built && resolvedHint?.bedroomPrivacy && !skipRelaxed) {
+      rung = 1;
       // Same hint without the hard "bedroom doors on the hallway only" rule
       // (doors still prefer the hallway; privacy stays a scoring preference).
       built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, { ...resolvedHint, bedroomPrivacy: false }, minAreaSlack);
     }
     if (!built && resolvedHint) {
+      rung = 2;
       // Last hinted rung: keep the user's roles (shared bathroom), entry side
       // and score preferences, but drop the hard near/away rules.
       built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, { ...resolvedHint, hard: false, bedroomPrivacy: false, hasTopology: false }, minAreaSlack);
     }
     const hinted = !!built;
+    if (hinted) rungWins[rung]++;
     if (!built) built = buildGrowByAttachmentCandidate(plotW, plotL, requested, prefs, mulberry32(candidateSeed >>> 0), palette, null, minAreaSlack);
     if (!built) continue;
     const { rooms, circulation } = built;

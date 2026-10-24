@@ -9,7 +9,7 @@
 export type Side = 'top' | 'bottom' | 'left' | 'right';
 export type RelSide = 'front' | 'back' | Side;
 
-export interface RoomPair { a: string; b: string }
+export interface RoomPair { a: string; b: string; /** scored, never a hard rule */ soft?: boolean }
 
 export interface LayoutConstraints {
   /** Explicit entry side from the text ("entrance on the east"). */
@@ -100,7 +100,7 @@ function findMentions(text: string, program: ProgramRoom[]): Mention[] {
   return mentions.sort((x, y) => x.start - y.start);
 }
 
-const ADJACENT_RE = /\b(?:near(?:\s+to)?|next\s+to|adjacent\s+to|adjoining|beside|close\s+to|attached\s+to|connected\s+to|opening\s+(?:in)?to|shares?\s+a\s+wall\s+with)\b/g;
+const ADJACENT_RE = /\b(?:with\s+(?:an?\s+)?(?=attached|en-?suite)|near(?:\s+to)?|next\s+to|adjacent\s+to|adjoining|beside|close\s+to|attached\s+to|connected\s+to|opening\s+(?:in)?to|shares?\s+a\s+wall\s+with)\b/g;
 const AVOID_RE = /\b(?:away\s+from|far\s+from|apart\s+from|separate(?:d)?\s+from|isolated\s+from|not\s+(?:next\s+to|near|adjacent\s+to))\b/g;
 const PLACE_RE = /\b(?:at|in|on|toward|towards|to)\s+the\s+(front|back|rear|left|right|north|south|east|west|top|bottom)\b/g;
 const ENTRY_RE = /\b(?:entry|entrance|main\s+door|front\s+door|gate)\b[^.;]{0,40}?\b(north|south|east|west|left|right|top|bottom)\b/;
@@ -119,9 +119,9 @@ export function parseRequirementsLocally(text: string, program: ProgramRoom[]): 
     out.adjacent.push({ a, b });
     out.applied.push(`${why}: ${a} next to ${b}`);
   };
-  const addAvoid = (a: string, b: string, why: string) => {
+  const addAvoid = (a: string, b: string, why: string, soft = false) => {
     if (norm(a) === norm(b) || out.avoid.some((p) => pairKey(p) === pairKey({ a, b }))) return;
-    out.avoid.push({ a, b });
+    out.avoid.push(soft ? { a, b, soft: true } : { a, b });
     out.applied.push(`${why}: ${a} kept apart from ${b}`);
   };
 
@@ -148,6 +148,12 @@ export function parseRequirementsLocally(text: string, program: ProgramRoom[]): 
           else addAvoid(a, b, `"${left.label} ${m![0]} ${right.label}"`);
         }
       }
+    }
+
+    if (/\bbed\s*rooms?\b[^.;]{0,25}\b(?:separate|separated|apart|isolated)\b|\bkeep\b[^.;]{0,30}\bbed\s*rooms?\b[^.;]{0,20}\bseparate\b/.test(s)) {
+      const sleeping = program.filter((r) => r.type === 'bedroom' || r.type === 'master-bedroom').map((r) => r.name);
+      for (let i = 0; i < sleeping.length; i++) for (let j = i + 1; j < sleeping.length; j++) addAvoid(sleeping[i], sleeping[j], 'Bedrooms kept separate', true);
+      if (sleeping.length > 1) used = true;
     }
 
     const place = new RegExp(PLACE_RE.source, 'g');
