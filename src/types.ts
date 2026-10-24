@@ -65,6 +65,11 @@ export interface FloorPlanDoor {
   offset?: number;
   width?: number;
   swing?: 'in' | 'out' | 'left' | 'right';
+  // Marks the plan's single main entry door (assigned server-side by
+  // assignOpeningsForLayout). Optional so older saved projects without it
+  // still load -- the renderer falls back to its old exterior-wall
+  // heuristic when no door has this flag.
+  isMainEntry?: boolean;
 }
 
 export interface FloorPlanWindow {

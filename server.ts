@@ -404,16 +404,17 @@ app.post('/api/gemini/floorplan', async (req, res) => {
       { name: 'Bathroom', type: 'bathroom', minSize: 5 },
     ];
 
+    const cleanRequirements = String(userRequirements || '').slice(0, 1000);
     const ai = getGeminiClient();
     if (ai) {
-      const prompt = createFloorPlanPrompt(width, length, roomList, String(userRequirements || '').slice(0, 1000));
+      const prompt = createFloorPlanPrompt(width, length, roomList, cleanRequirements);
       try {
         const text = await generateGeminiContentWithFallback(ai, prompt, {
           temperature: 0.15,
           responseMimeType: 'application/json',
         });
         const parsed = parseJsonResponse(text);
-        const validated = validateGeminiFloorPlan(parsed, width, length, roomList);
+        const validated = validateGeminiFloorPlan(parsed, width, length, roomList, cleanRequirements);
         if (validated) return res.json(validated);
         console.warn('[INTERIO Engine] Gemini returned a floor plan that failed geometry validation; using deterministic fallback.');
       } catch (geminiErr: any) {
@@ -421,7 +422,7 @@ app.post('/api/gemini/floorplan', async (req, res) => {
       }
     }
 
-    const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList);
+    const fallbackResult = generateAlgorithmicFloorPlan(width, length, roomList, cleanRequirements);
     if (fallbackResult.constraintError) {
       return res.status(422).json({ error: fallbackResult.constraintError });
     }
@@ -430,11 +431,10 @@ app.post('/api/gemini/floorplan', async (req, res) => {
     console.error('[INTERIO Engine] Floor-plan generation failed:', err);
     const fbWidth = Number(req.body.plotWidth) || 10;
     const fbLength = Number(req.body.plotLength) || 12;
-    const fallbackResult = generateAlgorithmicFloorPlan(fbWidth, fbLength, req.body.rooms || []);
+    const fallbackResult = generateAlgorithmicFloorPlan(fbWidth, fbLength, req.body.rooms || [], String(req.body.userRequirements || ''));
     if (fallbackResult.constraintError) {
       return res.status(422).json({ error: fallbackResult.constraintError });
     }
-    fallbackResult.rooms = sanitizeRoomCoordinates(fallbackResult.rooms, fbWidth, fbLength);
     return res.json(fallbackResult);
   }
 });
@@ -532,10 +532,16 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
 // ----------------------------------------------------
 // ALGORITHMIC FALLBACKS & SANITIZERS
 // ----------------------------------------------------
+// Gemini's only job is to choose room RECTANGLES that satisfy public/private
+// zoning and adjacency -- doors, windows, walls and furniture are always
+// derived afterward by assignOpeningsForLayout, the same deterministic logic
+// the algorithmic fallback uses, so both paths produce geometrically
+// consistent, non-banded layouts and we never have to trust the model's
+// opinion of where an opening belongs.
 function createFloorPlanPrompt(plotW: number, plotL: number, roomList: any[], userRequirements: string): string {
   const plotArea = roundPlan(plotW * plotL);
   const requestedRooms = roomList.map((room: any, index: number) =>
-    `${index + 1}. "${String(room.name || `Room ${index + 1}`)}" (type: ${room.type || 'room'}, minimum area: ${Number(room.minSize) || 10} m²)`
+    `${index + 1}. "${String(room.name || `Room ${index + 1}`)}" (type: ${room.type || 'room'}, zone: ${classifyZone(room.type)}, minimum area: ${Number(room.minSize) || 10} m²)`
   ).join('\n');
 
   return `You are an experienced residential architect producing a buildable conceptual 2D floor plan.
@@ -544,45 +550,33 @@ Create a complete, measured layout for a rectangular plot:
 - plot length: ${plotL} m
 - total plot area: ${plotArea} m²
 
-Requested rooms:
+Requested rooms (each already assigned to a public or private zone -- respect it):
 ${requestedRooms}
 
 User requirements:
 ${userRequirements || 'No additional requirements. Use a practical residential entry, circulation spine, daylight, and privacy zoning.'}
 
-Use the full available footprint efficiently. Calculate room dimensions from the actual plot area and requested minimum areas; do not invent a different plot size. Keep a 0.25 m exterior planning margin and reserve only purposeful circulation/entry space. The requested rooms must fit completely inside the plot, with no overlap and no large meaningless leftover area. Prefer realistic rectangular proportions: living rooms 1.4:1 to 2.2:1, bedrooms 1.1:1 to 1.8:1, bathrooms 1.2:1 to 2.2:1.
+Zoning rules -- these matter more than any fixed room order:
+- Group every "public" room (living, dining, kitchen, entry/hallway) together on one side of the plot, and every "private" room (bedrooms, bathrooms, study/office, laundry) together on the other side.
+- Connect the two zones with exactly ONE hallway/open-circulation rectangle -- never a separate corridor strip between every pair of rooms. If the zones can reasonably touch directly (e.g. a small plot), omit the hallway rectangle entirely and let them share a wall.
+- Adjacency: an ensuite/attached bathroom must share a wall with its bedroom. The kitchen must share a wall with the dining room (or the living room if there is no dining room). Bathrooms and laundry rooms should share plumbing walls with each other where possible. The main entry should open into the living room or the hallway, never directly into a bedroom or bathroom.
+- Realistic proportions: bedrooms and living areas no more than 2:1 (longest side at most double the shortest side). Kitchens, bathrooms, and the hallway may be more elongated, up to about 2.6:1.
+- Respect minimum areas: bedrooms at least 9 m², bathrooms at least 3.5 m², kitchens at least 7 m² -- and never smaller than the minimum area listed above for that room.
+- Rooms must tile the plot with no gaps other than the one hallway/circulation rectangle: no overlaps, and nothing may extend past the plot boundary. Keep a 0.25 m exterior planning margin.
+- Reflect the user's written requirements in the actual geometry, not just the notes -- e.g. "open kitchen" should place the kitchen directly against the living/dining room rather than behind a hallway door, and "master far from entrance" should place the master bedroom in the corner of the private zone farthest from the hallway/entry.
 
-Return JSON only. Every coordinate is in metres from the plot's top-left corner. Room and furniture coordinates are absolute plot coordinates. Include every requested room exactly once, plus an optional circulation array. Do not include images, URLs, base64, or markdown.
+Return JSON only. Every coordinate is in metres from the plot's top-left corner. Include every requested room exactly once, using its exact requested name. Do not include doors, windows, walls, or furniture -- a deterministic engine derives those from your room rectangles. Do not include images, URLs, base64, or markdown.
 
 JSON shape:
 {
-  "plotWidth": ${plotW},
-  "plotLength": ${plotL},
-  "plotArea": ${plotArea},
   "architecturalStyle": "Contemporary residential",
-  "designNotes": "brief zoning and entry explanation",
-  "circulation": [{"name":"Entry / Hallway","x":0,"y":0,"width":1,"height":1}],
-  "rooms": [{
-    "id": "room_1",
-    "name": "requested room name",
-    "type": "room type",
-    "x": 0,
-    "y": 0,
-    "width": 4,
-    "height": 4,
-    "area": 16,
-    "walls": [
-      {"side":"top","thickness":0.2},{"side":"bottom","thickness":0.2},
-      {"side":"left","thickness":0.2},{"side":"right","thickness":0.2}
-    ],
-    "doors": [{"side":"bottom","offset":1.2,"width":0.9,"swing":"in"}],
-    "windows": [{"side":"top","offset":1.4,"width":1.5}],
-    "adjacentTo": ["Hallway"],
-    "furniture": [{"id":"f_1","name":"fixture or furniture","category":"furniture","x":0.5,"y":0.5,"width":1.8,"height":0.8,"rotation":0}]
-  }]
+  "designNotes": "brief zoning explanation",
+  "adjacencyIntent": ["Master Bedroom shares a wall with Master Bathroom", "Kitchen opens directly onto Living Room"],
+  "circulation": [{"name":"Hallway","x":0,"y":0,"width":1,"height":1}],
+  "rooms": [{"name": "requested room name", "x": 0, "y": 0, "width": 4, "height": 4}]
 }
 
-Doors must face a circulation or entry edge, have a swing that stays inside the room, and not block another door. Give bedrooms/living/kitchen daylight windows; bathrooms may use a smaller high-level window. Use furniture/fixtures only where useful, keep each item inside its room, and never overlap furniture items.`;
+Only include "circulation" at all if a genuine hallway/spine rectangle is needed -- at most one rectangle, and omit the key entirely for a fully open-plan connection between zones.`;
 }
 
 function parseJsonResponse(text: string): any {
@@ -590,7 +584,14 @@ function parseJsonResponse(text: string): any {
   return JSON.parse(cleaned);
 }
 
-function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requestedRooms: any[]) {
+// Gemini now only proposes room rectangles (+ an optional single hallway
+// rectangle and a short adjacency intent) -- this validates the geometry,
+// repairs minor overlap/bounds noise with the same sanitizer the algorithmic
+// fallback uses on its own rough placements, and then hands the final
+// rectangles to assignOpeningsForLayout so doors/windows/walls come from one
+// shared, deterministic zoning-aware implementation rather than the model's
+// own (unverifiable) opinion of where an opening belongs.
+function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requestedRooms: any[], userRequirements: string) {
   if (!parsed || !Array.isArray(parsed.rooms) || parsed.rooms.length !== requestedRooms.length) return null;
 
   const byName = new Map<string, any>();
@@ -602,7 +603,7 @@ function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requ
   }
 
   const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
-  const rooms: any[] = [];
+  const rawRooms: any[] = [];
   for (let index = 0; index < requestedRooms.length; index++) {
     const requested = requestedRooms[index];
     const raw = byName.get(String(requested.name || '').trim().toLowerCase());
@@ -612,58 +613,62 @@ function validateGeminiFloorPlan(parsed: any, plotW: number, plotL: number, requ
     const y = Number(raw.y);
     const width = Number(raw.width);
     const height = Number(raw.height);
-    const minimumArea = Math.max(Number(requested.minSize) || 0, practicalArea(requested.type));
     if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
-    if (x < 0 || y < 0 || x + width > plotW + 0.001 || y + height > plotL + 0.001) return null;
-    if (width * height < minimumArea * 0.95 || !hasPracticalDimensions({ type: requested.type, width, height })) return null;
 
-    const doors = normalizeGeminiDoors(raw.doors, raw.doorSide, width, height);
-    const windows = normalizeGeminiWindows(raw.windows, raw.windowSide, width, height);
-    if (!doors.length) return null;
-    const furniture = normalizeGeminiFurniture(raw.furniture, x, y, width, height);
-    if (furniture === null) return null;
-
-    rooms.push({
-      ...raw,
-      id: String(raw.id || `room_${index + 1}`),
+    rawRooms.push({
+      id: `room_${index + 1}`,
       name: String(requested.name),
       type: requested.type || raw.type || 'room',
-      x: roundPlan(x),
-      y: roundPlan(y),
-      width: roundPlan(width),
-      height: roundPlan(height),
-      area: roundPlan(width * height),
-      walls: normalizeGeminiWalls(raw.walls),
-      doors,
-      windows,
-      doorSide: doors[0].side,
-      windowSide: windows[0]?.side,
-      color: /^#[0-9a-f]{6}$/i.test(String(raw.color || '')) ? raw.color : palette[index % palette.length],
-      furniture,
+      x, y, width, height,
+      color: palette[index % palette.length],
     });
   }
 
-  for (let i = 0; i < rooms.length; i++) {
+  // Clamp to the plot and resolve overlap exactly like the algorithmic
+  // fallback's own placements get cleaned up -- geometry noise gets
+  // repaired here, not rejected outright.
+  const sanitized = sanitizeRoomCoordinates(rawRooms, plotW, plotL);
+
+  for (const room of sanitized) {
+    const requested = requestedRooms.find((r: any) => String(r.name).trim().toLowerCase() === room.name.trim().toLowerCase());
+    const minimumArea = Math.max(Number(requested?.minSize) || 0, practicalArea(room.type));
+    if (room.width * room.height < minimumArea * 0.85) return null;
+    if (!hasPracticalDimensions(room) || !respectsAspectCap(room)) return null;
+  }
+
+  for (let i = 0; i < sanitized.length; i++) {
     for (let j = 0; j < i; j++) {
-      if (roomRectsOverlap(rooms[i], rooms[j])) return null;
+      if (roomRectsOverlap(sanitized[i], sanitized[j])) return null;
     }
   }
 
-  const builtArea = rooms.reduce((sum, room) => sum + room.area, 0);
+  const builtArea = sanitized.reduce((sum, room) => sum + room.width * room.height, 0);
   if (builtArea / (plotW * plotL) < 0.45) return null;
-  const circulation = normalizeCirculation(parsed.circulation, plotW, plotL, rooms);
+
+  // At most one hallway/spine rectangle -- a corridor strip between every
+  // room is exactly the banded layout this rework exists to eliminate.
+  const circulationSource = Array.isArray(parsed.circulation) ? parsed.circulation.slice(0, 1) : [];
+  const circulation = circulationSource.length ? normalizeCirculation(circulationSource, plotW, plotL, sanitized) : [];
   if (circulation === null) return null;
+
+  assignOpeningsForLayout(sanitized, circulation, plotW, plotL, parseLayoutPreferences(userRequirements));
+
+  const totalBuiltArea = roundPlan(builtArea);
+  const adjacencyIntent = Array.isArray(parsed.adjacencyIntent)
+    ? parsed.adjacencyIntent.filter((s: unknown) => typeof s === 'string').slice(0, 6).join('; ')
+    : '';
+  const baseNotes = String(parsed.designNotes || 'Rooms are zoned into public and private areas connected by a single circulation spine.').slice(0, 500);
 
   return {
     plotWidth: plotW,
     plotLength: plotL,
     plotArea: roundPlan(plotW * plotL),
-    totalBuiltArea: roundPlan(builtArea),
-    openSpaceArea: roundPlan(Math.max(0, plotW * plotL - builtArea)),
+    totalBuiltArea,
+    openSpaceArea: roundPlan(Math.max(0, plotW * plotL - totalBuiltArea)),
     architecturalStyle: String(parsed.architecturalStyle || 'Contemporary residential').slice(0, 80),
-    designNotes: String(parsed.designNotes || 'Rooms are arranged around a purposeful entry and circulation spine.').slice(0, 800),
+    designNotes: (adjacencyIntent ? `${baseNotes} ${adjacencyIntent}` : baseNotes).slice(0, 800),
     circulation,
-    rooms,
+    rooms: sanitized,
   };
 }
 
@@ -675,64 +680,61 @@ function normalizeGeminiWalls(walls: any): any[] {
   });
 }
 
-function normalizeGeminiDoors(doors: any, fallbackSide: any, width: number, height: number): any[] {
-  const validSides = ['top', 'bottom', 'left', 'right'];
-  const source = Array.isArray(doors) ? doors : [{ side: fallbackSide || 'bottom' }];
-  return source.slice(0, 3).filter((door: any) => validSides.includes(door?.side)).map((door: any) => ({
-    side: door.side,
-    offset: Math.max(0.1, Math.min((door.side === 'left' || door.side === 'right' ? height : width) - 0.1, Number(door.offset) || 0.3)),
-    width: Math.max(0.6, Math.min(1.1, Number(door.width) || 0.9)),
-    swing: ['in', 'out', 'left', 'right'].includes(door.swing) ? door.swing : 'in',
-  }));
+// Clamps an opening's width to the wall length first, then clamps offset so
+// offset+width can never exceed the wall -- clamping offset alone (the old
+// behaviour) could still leave a door hanging off the end of a short wall.
+function clampOpeningToWall(offset: number, width: number, wallLength: number, minWidth: number, maxWidth: number): { offset: number; width: number } {
+  const w = Math.max(minWidth, Math.min(maxWidth, wallLength - 0.05, width));
+  const maxOffset = Math.max(0.05, wallLength - w - 0.05);
+  const o = Math.max(0.05, Math.min(maxOffset, offset));
+  return { offset: roundPlan(o), width: roundPlan(w) };
 }
 
-function normalizeGeminiWindows(windows: any, fallbackSide: any, width: number, height: number): any[] {
-  const validSides = ['top', 'bottom', 'left', 'right'];
-  const source = Array.isArray(windows) ? windows : (fallbackSide ? [{ side: fallbackSide }] : []);
-  return source.slice(0, 4).filter((window: any) => validSides.includes(window?.side)).map((window: any) => ({
-    side: window.side,
-    offset: Math.max(0.1, Math.min((window.side === 'left' || window.side === 'right' ? height : width) - 0.1, Number(window.offset) || 0.4)),
-    width: Math.max(0.5, Math.min(2.4, Number(window.width) || 1.2)),
-  }));
+function wallLengthForSide(side: string, width: number, height: number): number {
+  return side === 'left' || side === 'right' ? height : width;
 }
 
-function normalizeGeminiFurniture(items: any, roomX: number, roomY: number, roomW: number, roomH: number): any[] | null {
-  if (items === undefined) return [];
-  if (!Array.isArray(items)) return null;
-  const normalized = items.slice(0, 20).map((item: any, index: number) => ({
-    id: String(item?.id || `f_${index + 1}`),
-    name: String(item?.name || 'Fixture'),
-    category: ['furniture', 'fixture', 'sanitary'].includes(item?.category) ? item.category : 'fixture',
-    x: Number(item?.x),
-    y: Number(item?.y),
-    width: Number(item?.width),
-    height: Number(item?.height),
-    rotation: Number(item?.rotation) || 0,
-  }));
-  if (normalized.some((item) => ![item.x, item.y, item.width, item.height].every(Number.isFinite) ||
-    item.width <= 0 || item.height <= 0 ||
-    item.x < roomX || item.y < roomY ||
-    item.x + item.width > roomX + roomW + 0.001 ||
-    item.y + item.height > roomY + roomH + 0.001)) return null;
-  for (let i = 0; i < normalized.length; i++) {
-    for (let j = 0; j < i; j++) {
-      if (floorPlanFurnitureOverlap(normalized[i], normalized[j])) return null;
-    }
-
-    function floorPlanFurnitureOverlap(
-      a: { x: number; y: number; width: number; height: number },
-      b: { x: number; y: number; width: number; height: number }
-    ): boolean {
-      const EPS = 1e-6;
-      return (
-        a.x < b.x + b.width - EPS &&
-        a.x + a.width > b.x + EPS &&
-        a.y < b.y + b.height - EPS &&
-        a.y + a.height > b.y + EPS
-      );
+// Rejects (returns null) rather than silently shrinking when two openings on
+// the same wall would overlap -- that's a geometry error from the model, not
+// something safe to paper over, consistent with how room-level validation
+// elsewhere in this file rejects rather than repositions bad geometry.
+function openingsOverlapOnSameWall(items: { side: string; offset: number; width: number }[]): boolean {
+  const bySide = new Map<string, { offset: number; width: number }[]>();
+  for (const item of items) {
+    if (!bySide.has(item.side)) bySide.set(item.side, []);
+    bySide.get(item.side)!.push(item);
+  }
+  for (const segments of bySide.values()) {
+    for (let i = 0; i < segments.length; i++) {
+      for (let j = 0; j < i; j++) {
+        const a = segments[i];
+        const b = segments[j];
+        if (a.offset < b.offset + b.width - 1e-6 && a.offset + a.width > b.offset + 1e-6) return true;
+      }
     }
   }
-  return normalized;
+  return false;
+}
+
+// A room's side is a genuine exterior wall only if it actually touches the
+// plot boundary at that room's position -- a window can never legitimately
+// be assigned to a side that borders another room.
+function isPlotExteriorSide(room: { x: number; y: number; width: number; height: number }, side: string, plotW: number, plotL: number): boolean {
+  // Both the Gemini prompt and the algorithmic layout keep a ~0.25m exterior
+  // planning margin, so a genuinely exterior room wall sits just inside the
+  // plot edge rather than exactly at x=0/y=0/plotW/plotL -- the tolerance
+  // has to cover that margin, not just floating-point rounding.
+  const EPS = 0.35;
+  if (side === 'top') return room.y <= EPS;
+  if (side === 'bottom') return room.y + room.height >= plotL - EPS;
+  if (side === 'left') return room.x <= EPS;
+  if (side === 'right') return room.x + room.width >= plotW - EPS;
+  return false;
+}
+
+function isHabitableRoomType(type: string | undefined): boolean {
+  const normalized = String(type || '').toLowerCase();
+  return normalized.includes('living') || normalized.includes('bed') || normalized.includes('kitchen');
 }
 
 function normalizeCirculation(items: any, plotW: number, plotL: number, rooms: any[]): any[] | null {
@@ -808,6 +810,10 @@ function sanitizeRoomCoordinates(rooms: any[], plotW: number, plotL: number) {
     if (!movedAny) break;
   }
 
+  // Doors/windows are assigned afterward (by assignOpeningsForLayout) from
+  // each room's final, post-nudge geometry, so there's nothing stale here to
+  // re-clamp -- unlike the old flow where Gemini supplied openings before
+  // this nudge pass could still resize a room out from under them.
   return clamped;
 }
 
@@ -900,7 +906,14 @@ function furnitureRectsOverlap(
   );
 }
 
-function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[]) {
+// Deterministic fallback: zones the plot into public/private halves, slices
+// each zone into room rectangles with a squarified guillotine cut (always
+// along the current rect's longer side, so cuts alternate orientation
+// instead of producing a uniform row/column grid), then hands the result to
+// the same assignOpeningsForLayout used for a validated Gemini layout. This
+// is the single place a layout's *geometry* is chosen; everything after that
+// -- zoning, adjacency, doors, windows -- is shared with the Gemini path.
+function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[], userRequirements: string = '') {
   const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
   const requested = (requestedRooms.length ? requestedRooms : [
     { name: 'Living Room', type: 'living-room', minSize: 20 },
@@ -914,54 +927,45 @@ function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRoo
     targetArea: Math.max(Number(room.minSize) || 10, practicalArea(room.type)),
   }));
 
-  const edge = 0.25;
+  const prefs = parseLayoutPreferences(userRequirements);
+  // 0.3m exterior planning margin -- deliberately a clean 1-decimal value:
+  // every cut coordinate downstream gets rounded to 1 decimal (roundPlan),
+  // and starting from a value like 0.25 that rounds ambiguously produces a
+  // 0.1m gap or overlap the first time a touching edge is rounded on each
+  // side independently.
+  const edge = 0.3;
   const clearWidth = Math.max(1.8, plotW - edge * 2);
   const clearLength = Math.max(1.8, plotL - edge * 2);
   const netArea = clearWidth * clearLength;
-  const columns = chooseLayoutColumns(requested, clearWidth, clearLength);
-  const rows = chunkRooms(requested, columns);
-  const corridor = requested.length > 1 ? Math.min(1, Math.max(0.8, Math.min(clearWidth, clearLength) * 0.055)) : 0;
-  const usableWidth = clearWidth - Math.max(0, columns - 1) * corridor;
-  const usableLength = clearLength - Math.max(0, rows.length - 1) * corridor;
   const requestedArea = requested.reduce((sum: number, room: any) => sum + room.targetArea, 0);
-  const constrained = requestedArea > usableWidth * usableLength;
-  const rowWeights = rows.map((row) => row.reduce((sum: number, room: any) => sum + room.targetArea, 0));
-  const totalWeight = rowWeights.reduce((sum, weight) => sum + weight, 0) || 1;
+  const constrained = requestedArea > netArea;
+
+  const publicRooms = requested.filter((r: any) => classifyZone(r.type) === 'public');
+  const privateRooms = requested.filter((r: any) => classifyZone(r.type) === 'private');
+  const hasBothZones = publicRooms.length > 0 && privateRooms.length > 0;
+  const openPlan = prefs.openPlanKitchen || !hasBothZones;
+  const hallwayWidth = hasBothZones && !openPlan ? Math.min(1.3, Math.max(0.9, Math.min(clearWidth, clearLength) * 0.09)) : 0;
+
+  const { publicRect, privateRect, hallwayRect, publicHallwayEdge, privateHallwayEdge } = splitPlotIntoZones(edge, clearWidth, clearLength, publicRooms, privateRooms, hallwayWidth);
+
   const rooms: any[] = [];
-  let y = edge;
+  const pairMap = computeAdjacencyPairs(requested);
+  if (publicRooms.length) sliceZoneIntoRooms(publicRect, orderGroupsForZone(publicRooms, pairMap, false), publicHallwayEdge, rooms, palette);
+  if (privateRooms.length) sliceZoneIntoRooms(privateRect, orderGroupsForZone(privateRooms, pairMap, prefs.masterFarFromEntrance), privateHallwayEdge, rooms, palette);
 
-  rows.forEach((row, rowIndex) => {
-    const rowHeight = usableLength * (rowWeights[rowIndex] / totalWeight);
-    const rowWeight = rowWeights[rowIndex] || 1;
-    let x = edge;
-    row.forEach((room, colIndex) => {
-      const width = usableWidth * (room.targetArea / rowWeight);
-      const doorSide = doorFacingCirculation(rowIndex, rows.length, colIndex, row.length);
-      const windowSide = exteriorWindowSide(rowIndex, rows.length, colIndex, row.length, doorSide);
-      rooms.push({
-        id: room.id,
-        name: room.name,
-        type: room.type,
-        x: roundPlan(x),
-        y: roundPlan(y),
-        width: roundPlan(width),
-        height: roundPlan(rowHeight),
-        doorSide,
-        windowSide,
-        color: palette[rooms.length % palette.length],
-        adjacentTo: [],
-        area: roundPlan(width * rowHeight),
-      });
-      x += width + corridor;
-    });
-    y += rowHeight + corridor;
-  });
+  const circulation: { name: string; x: number; y: number; width: number; height: number }[] = hallwayRect ? [{ ...hallwayRect, name: 'Hallway' }] : [];
+  assignOpeningsForLayout(rooms, circulation, plotW, plotL, prefs);
 
-  const totalBuiltArea = roundPlan(rooms.reduce((sum, room) => sum + room.area, 0));
+  const totalBuiltArea = roundPlan(rooms.reduce((sum, room) => sum + room.width * room.height, 0));
   const circulationArea = Math.max(0, roundPlan(netArea - totalBuiltArea));
   const minimumIssue = rooms.some((room) => !hasPracticalDimensions(room));
   const constraintNote = constrained
-    ? ` Requested program (${roundPlan(requestedArea)} m²) is larger than the ${roundPlan(usableWidth * usableLength)} m² net room area after required circulation. Rooms were proportionally compacted within the plot; review the labelled dimensions before construction.`
+    ? ` Requested program (${roundPlan(requestedArea)} m²) is larger than the ${roundPlan(netArea)} m² net area available inside the plot. Rooms were proportionally compacted; review the labelled dimensions before construction.`
+    : '';
+  const zoningNote = hasBothZones
+    ? (openPlan
+      ? ' The public zone (living/dining/kitchen) and private zone (bedrooms/bathrooms) sit directly adjacent in an open-plan connection.'
+      : ` A single ${roundPlan(circulationArea)} m² hallway connects the public zone (living/dining/kitchen) to the private zone (bedrooms/bathrooms).`)
     : '';
 
   return {
@@ -970,22 +974,510 @@ function generateAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRoo
     plotArea: roundPlan(plotW * plotL),
     totalBuiltArea,
     openSpaceArea: roundPlan(Math.max(0, plotW * plotL - totalBuiltArea)),
-    architecturalStyle: 'Area-Optimized Residential Plan',
-    designNotes: `Each requested room is sized from its target area and placed inside a ${roundPlan(netArea)} m² net envelope within the measured ${roundPlan(plotW * plotL)} m² plot. ${roundPlan(circulationArea)} m² is reserved as continuous circulation/entry clearance; doors face that clearance and windows face an exterior wall.${constraintNote}`,
-    circulation: [
-      {
-        name: 'Entry clearance',
-        x: 0,
-        y: roundPlan(plotL - edge),
-        width: roundPlan(plotW),
-        height: roundPlan(edge),
-      },
-    ],
+    architecturalStyle: 'Zoned Residential Plan',
+    designNotes: `Rooms are grouped into public and private zones and sized from their target areas within the ${roundPlan(netArea)} m² net envelope of the measured ${roundPlan(plotW * plotL)} m² plot.${zoningNote}${constraintNote}`,
+    circulation,
     rooms,
     constraintError: minimumIssue
       ? `The ${plotW}m × ${plotL}m plot cannot accommodate all requested rooms with the minimum practical room dimensions and circulation clearance. Reduce room sizes/count or increase the plot dimensions.`
       : undefined,
   };
+}
+
+// Public rooms (living/dining/kitchen/entry/hallway/balcony) group together,
+// private rooms (bedrooms/ensuite bathrooms/study/laundry) group together --
+// the zoning rule the whole layout is built around. A powder room is kept
+// public rather than private: it's conventionally a guest half-bath off the
+// entry/living circulation, not tucked into the bedroom wing, and treating
+// it as private would otherwise force it into whatever private-zone bay is
+// left over regardless of how little depth that bay actually has.
+function classifyZone(type: string | undefined): 'public' | 'private' {
+  const PRIVATE_TYPES = new Set(['bedroom', 'master-bedroom', 'bathroom', 'office', 'laundry', 'utility']);
+  return PRIVATE_TYPES.has(String(type || '')) ? 'private' : 'public';
+}
+
+// Lightweight, deterministic reading of a few explicit layout requests --
+// not general NLP, just the two concrete preferences the brief calls out --
+// so the same plot/room-list with different written requirements visibly
+// changes the resulting layout.
+function parseLayoutPreferences(userRequirements: string): { openPlanKitchen: boolean; masterFarFromEntrance: boolean } {
+  const text = String(userRequirements || '').toLowerCase();
+  return {
+    openPlanKitchen: /open[\s-]*(plan|concept)?\s*kitchen/.test(text) || (/open[\s-]*plan/.test(text) && /kitchen/.test(text)),
+    masterFarFromEntrance: /master/.test(text) && /(far|away|furthest|farthest)/.test(text) && /(entr|door|front)/.test(text),
+  };
+}
+
+// Splits the net (margin-clear) plot rectangle into a public zone, a private
+// zone, and (unless open-plan) a single hallway strip between them. Cuts
+// along whichever axis is longer so the two zones stay reasonably
+// proportioned regardless of the plot's own aspect ratio.
+type HallwayEdge = 'top' | 'bottom' | 'left' | 'right' | null;
+
+function splitPlotIntoZones(
+  edge: number, clearWidth: number, clearLength: number,
+  publicRooms: { targetArea: number }[], privateRooms: { targetArea: number }[], hallwayWidth: number
+): { publicRect: ZoneRect; privateRect: ZoneRect; hallwayRect: ZoneRect | null; publicHallwayEdge: HallwayEdge; privateHallwayEdge: HallwayEdge } {
+  const publicArea = publicRooms.reduce((s, r) => s + r.targetArea, 0);
+  const privateArea = privateRooms.reduce((s, r) => s + r.targetArea, 0);
+  const totalArea = publicArea + privateArea || 1;
+
+  // A single zone still benefits from a fixed "entry-facing" edge (so its
+  // own rooms get bay-cut toward that edge instead of the old longer-side
+  // heuristic that could nest one room behind another) even though there's
+  // no second zone or hallway to literally face.
+  if (!publicRooms.length) return { publicRect: { x: edge, y: edge, width: 0, height: 0 }, privateRect: { x: edge, y: edge, width: clearWidth, height: clearLength }, hallwayRect: null, publicHallwayEdge: null, privateHallwayEdge: 'bottom' };
+  if (!privateRooms.length) return { publicRect: { x: edge, y: edge, width: clearWidth, height: clearLength }, privateRect: { x: edge, y: edge, width: 0, height: 0 }, hallwayRect: null, publicHallwayEdge: 'bottom', privateHallwayEdge: null };
+
+  const vertical = clearWidth >= clearLength;
+  if (vertical) {
+    const usable = Math.max(0.1, clearWidth - hallwayWidth);
+    const publicW = Math.max(1.8, usable * (publicArea / totalArea));
+    // Round the shared cut coordinate once and derive both zones' edges from
+    // it, instead of rounding each zone's x/width independently -- otherwise
+    // the public zone's displayed right edge and the private zone's
+    // displayed left edge can round to different values and either gap or
+    // overlap by up to 0.1m.
+    const hallwayStart = roundPlan(edge + publicW);
+    const hallwayEnd = roundPlan(hallwayStart + hallwayWidth);
+    return {
+      publicRect: { x: edge, y: edge, width: hallwayStart - edge, height: clearLength },
+      privateRect: { x: hallwayEnd, y: edge, width: edge + clearWidth - hallwayEnd, height: clearLength },
+      hallwayRect: hallwayWidth > 0 ? { x: hallwayStart, y: edge, width: hallwayEnd - hallwayStart, height: clearLength } : null,
+      publicHallwayEdge: 'right',
+      privateHallwayEdge: 'left',
+    };
+  }
+  const usable = Math.max(0.1, clearLength - hallwayWidth);
+  const privateL = Math.max(1.8, usable * (privateArea / totalArea));
+  // Public zone (with the main entry) sits along the front/bottom edge,
+  // private zone at the back -- matches the "entry clearance" convention the
+  // rest of the renderer already uses. As above, round the shared cut once
+  // so the two zones' edges can't round to slightly different values.
+  const hallwayStart = roundPlan(edge + privateL);
+  const hallwayEnd = roundPlan(hallwayStart + hallwayWidth);
+  return {
+    publicRect: { x: edge, y: hallwayEnd, width: clearWidth, height: edge + clearLength - hallwayEnd },
+    privateRect: { x: edge, y: edge, width: clearWidth, height: hallwayStart - edge },
+    hallwayRect: hallwayWidth > 0 ? { x: edge, y: hallwayStart, width: clearWidth, height: hallwayEnd - hallwayStart } : null,
+    publicHallwayEdge: 'top',
+    privateHallwayEdge: 'bottom',
+  };
+}
+
+type ZoneRect = { x: number; y: number; width: number; height: number };
+type RoomMeta = { id: string; name: string; type: string; targetArea: number };
+
+// Pairs rooms that must end up sharing a wall: each bedroom (master first)
+// with the next unclaimed bathroom (its ensuite), and the kitchen with the
+// dining room (or living room if there's no dining room). Pure function of
+// id/type, so calling it again later on the final room list -- to decide
+// which rooms get a direct door instead of one to the hallway -- reproduces
+// exactly the same pairing used here to group them during slicing.
+function computeAdjacencyPairs(roomsMeta: { id: string; type: string }[]): Map<string, string> {
+  const byType = (t: string) => roomsMeta.filter((r) => r.type === t);
+  const map = new Map<string, string>();
+  const bedQueue = [...byType('master-bedroom'), ...byType('bedroom')];
+  const bathQueue = byType('bathroom');
+  while (bedQueue.length && bathQueue.length) {
+    const bed = bedQueue.shift()!;
+    const bath = bathQueue.shift()!;
+    map.set(bed.id, bath.id);
+    map.set(bath.id, bed.id);
+  }
+  const kitchen = byType('kitchen')[0];
+  const partner = byType('dining-room')[0] || byType('living-room')[0];
+  if (kitchen && partner && !map.has(kitchen.id)) {
+    map.set(kitchen.id, partner.id);
+    if (!map.has(partner.id)) map.set(partner.id, kitchen.id);
+  }
+  return map;
+}
+
+// Groups a zone's rooms into clusters (a pair that must touch, or a lone
+// room) in the order the slicer should carve them from the zone rectangle.
+// When farFromEntrance is set, the cluster containing the master bedroom is
+// moved to the end of the list -- the slicer always carves the first cluster
+// off the edge nearest the hallway, so this pushes the master bedroom toward
+// the far corner of the private zone.
+function orderGroupsForZone(roomsMeta: RoomMeta[], pairMap: Map<string, string>, farFromEntrance: boolean): RoomMeta[][] {
+  const used = new Set<string>();
+  const groups: RoomMeta[][] = [];
+  for (const room of roomsMeta) {
+    if (used.has(room.id)) continue;
+    const partnerId = pairMap.get(room.id);
+    const partner = partnerId ? roomsMeta.find((r) => r.id === partnerId) : undefined;
+    if (partner && !used.has(partner.id)) {
+      groups.push([room, partner]);
+      used.add(room.id);
+      used.add(partner.id);
+    } else {
+      groups.push([room]);
+      used.add(room.id);
+    }
+  }
+  if (farFromEntrance) {
+    const masterIdx = groups.findIndex((g) => g.some((r) => r.type === 'master-bedroom'));
+    if (masterIdx >= 0 && masterIdx !== groups.length - 1) {
+      const [masterGroup] = groups.splice(masterIdx, 1);
+      groups.push(masterGroup);
+    }
+  }
+  return groups;
+}
+
+// Recursively carves `rect` between the given room clusters. Every cut that
+// separates two INDEPENDENT clusters is made parallel to the zone's hallway
+// edge (so every resulting bay still spans the full depth back to the
+// hallway and keeps its own door to it) -- only the cut INSIDE a pair
+// cluster goes the other way, deliberately tucking the second room (an
+// ensuite bath, say) behind the first instead of against the hallway. That's
+// what keeps a lone room from ever ending up reachable only by walking
+// through an unrelated neighbour. With no hallway edge (open-plan or a
+// single zone), there's nothing to stay parallel to, so cuts just alternate
+// along whichever side of the rect is currently longer.
+function sliceZoneIntoRooms(rect: ZoneRect, groups: RoomMeta[][], hallwayEdge: HallwayEdge, out: any[], palette: string[]): void {
+  if (groups.length === 0) return;
+  if (groups.length === 1) {
+    const [group] = groups;
+    if (group.length === 1) {
+      finalizeRoomRect(group[0], rect, out, palette);
+    } else {
+      splitPairIntoRect(rect, group[0], group[1], hallwayEdge, out, palette);
+    }
+    return;
+  }
+
+  const weightOf = (g: RoomMeta[]) => g.reduce((s, r) => s + r.targetArea, 0);
+  const total = groups.reduce((s, g) => s + weightOf(g), 0) || 1;
+  let bestIdx = 1;
+  let bestDiff = Infinity;
+  let cumulative = 0;
+  for (let i = 1; i < groups.length; i++) {
+    cumulative += weightOf(groups[i - 1]);
+    const diff = Math.abs(cumulative - total / 2);
+    if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+  }
+  const left = groups.slice(0, bestIdx);
+  const right = groups.slice(bestIdx);
+  // The bay's OTHER dimension (depth, toward/away from the hallway) is
+  // whatever's left over from the zone -- every bay inherits the same full
+  // depth regardless of its target area. Allocating bay WIDTH by raw area
+  // would starve a small room (e.g. a 4m² powder room forced to the zone's
+  // full ~10m depth ends up under a metre wide); weighting by sqrt(area)
+  // instead keeps small rooms from being squeezed into slivers while still
+  // giving larger rooms proportionally more space.
+  const sqrtWeightOf = (g: RoomMeta[]) => Math.sqrt(Math.max(0.01, weightOf(g)));
+  const leftWeight = left.reduce((s, g) => s + sqrtWeightOf(g), 0);
+  const rightWeight = right.reduce((s, g) => s + sqrtWeightOf(g), 0) || 0.01;
+  const frac = leftWeight / (leftWeight + rightWeight);
+
+  // Round the cut coordinate itself (not each child's x/width separately)
+  // before recursing -- two independently-rounded edges meant to coincide
+  // can land 0.1m apart and either gap or overlap.
+  const bayCutIsVertical = hallwayEdge ? (hallwayEdge === 'top' || hallwayEdge === 'bottom') : rect.width >= rect.height;
+  if (bayCutIsVertical) {
+    const cutX = roundPlan(rect.x + rect.width * frac);
+    sliceZoneIntoRooms({ x: rect.x, y: rect.y, width: cutX - rect.x, height: rect.height }, left, hallwayEdge, out, palette);
+    sliceZoneIntoRooms({ x: cutX, y: rect.y, width: rect.x + rect.width - cutX, height: rect.height }, right, hallwayEdge, out, palette);
+  } else {
+    const cutY = roundPlan(rect.y + rect.height * frac);
+    sliceZoneIntoRooms({ x: rect.x, y: rect.y, width: rect.width, height: cutY - rect.y }, left, hallwayEdge, out, palette);
+    sliceZoneIntoRooms({ x: rect.x, y: cutY, width: rect.width, height: rect.y + rect.height - cutY }, right, hallwayEdge, out, palette);
+  }
+}
+
+// Splits a pair's shared rect perpendicular to the hallway: roomA (the
+// bedroom/kitchen -- whichever is listed first in computeAdjacencyPairs)
+// gets the half nearer the hallway edge, roomB (its ensuite bath / dining
+// partner) gets the far half. Without a hallway edge, it just cuts along
+// whichever side of the rect is longer.
+function splitPairIntoRect(rect: ZoneRect, roomA: RoomMeta, roomB: RoomMeta, hallwayEdge: HallwayEdge, out: any[], palette: string[]): void {
+  const frac = roomA.targetArea / Math.max(0.01, roomA.targetArea + roomB.targetArea);
+  const pairCutIsVertical = hallwayEdge ? (hallwayEdge === 'left' || hallwayEdge === 'right') : rect.width >= rect.height;
+  const aIsNear = hallwayEdge === 'right' || hallwayEdge === 'bottom' || !hallwayEdge;
+
+  if (pairCutIsVertical) {
+    const cutX = roundPlan(rect.x + rect.width * (aIsNear ? 1 - frac : frac));
+    const nearRect = { x: cutX, y: rect.y, width: rect.x + rect.width - cutX, height: rect.height };
+    const farRect = { x: rect.x, y: rect.y, width: cutX - rect.x, height: rect.height };
+    finalizeRoomRect(roomA, aIsNear ? nearRect : farRect, out, palette);
+    finalizeRoomRect(roomB, aIsNear ? farRect : nearRect, out, palette);
+  } else {
+    const cutY = roundPlan(rect.y + rect.height * (aIsNear ? 1 - frac : frac));
+    const nearRect = { x: rect.x, y: cutY, width: rect.width, height: rect.y + rect.height - cutY };
+    const farRect = { x: rect.x, y: rect.y, width: rect.width, height: cutY - rect.y };
+    finalizeRoomRect(roomA, aIsNear ? nearRect : farRect, out, palette);
+    finalizeRoomRect(roomB, aIsNear ? farRect : nearRect, out, palette);
+  }
+}
+
+function finalizeRoomRect(meta: RoomMeta, rect: ZoneRect, out: any[], palette: string[]): void {
+  out.push({
+    id: meta.id,
+    name: meta.name,
+    type: meta.type,
+    x: roundPlan(rect.x),
+    y: roundPlan(rect.y),
+    width: roundPlan(rect.width),
+    height: roundPlan(rect.height),
+    area: roundPlan(rect.width * rect.height),
+    color: palette[out.length % palette.length],
+    adjacentTo: [],
+  });
+}
+
+function maxAspectForType(type: string | undefined): number {
+  const t = String(type || '');
+  return t === 'bedroom' || t === 'master-bedroom' || t === 'living-room' ? 2.0 : 2.6;
+}
+
+function respectsAspectCap(room: { type: string; width: number; height: number }): boolean {
+  const longer = Math.max(room.width, room.height);
+  const shorter = Math.max(0.1, Math.min(room.width, room.height));
+  return longer / shorter <= maxAspectForType(room.type) * 1.08;
+}
+
+// Does `side` of `room` touch `candidate`'s matching side at all?
+function findTouchingSide(room: ZoneRect, candidate: ZoneRect): 'top' | 'bottom' | 'left' | 'right' | null {
+  const sides: ('top' | 'bottom' | 'left' | 'right')[] = ['top', 'bottom', 'left', 'right'];
+  return sides.find((side) => sidesAreAdjacent(room, side, candidate)) || null;
+}
+
+function findAnyTouchingSide(room: ZoneRect, candidates: ZoneRect[]): 'top' | 'bottom' | 'left' | 'right' | null {
+  const sides: ('top' | 'bottom' | 'left' | 'right')[] = ['top', 'bottom', 'left', 'right'];
+  return sides.find((side) => candidates.some((c) => sidesAreAdjacent(room, side, c))) || null;
+}
+
+function anyExteriorSide(room: ZoneRect, plotW: number, plotL: number): 'top' | 'bottom' | 'left' | 'right' | null {
+  const preferenceOrder: ('top' | 'bottom' | 'left' | 'right')[] = ['bottom', 'top', 'left', 'right'];
+  return preferenceOrder.find((side) => isPlotExteriorSide(room, side, plotW, plotL)) || null;
+}
+
+// Derives every room's walls/doors/windows from its FINAL rectangle, shared
+// by both the Gemini path (after sanitizeRoomCoordinates) and the
+// algorithmic fallback -- so opening placement is always one deterministic,
+// zoning-aware implementation instead of something either path has to get
+// right on its own. Mutates each room in place.
+function assignOpeningsForLayout(
+  rooms: any[],
+  circulation: { x: number; y: number; width: number; height: number }[],
+  plotW: number, plotL: number,
+  prefs: { openPlanKitchen: boolean }
+): void {
+  const pairMap = computeAdjacencyPairs(rooms);
+  const hallway = circulation[0] || null;
+
+  for (const room of rooms) {
+    const partnerId = pairMap.get(room.id);
+    const partner = partnerId ? rooms.find((r) => r.id === partnerId) : undefined;
+    const otherRooms = rooms.filter((r) => r !== room && r !== partner);
+    const doors: { side: string; offset: number; width: number; swing: string }[] = [];
+
+    const isKitchenPair = !!partner && (room.type === 'kitchen' || partner.type === 'kitchen');
+    const isBathPair = !!partner && (room.type === 'bathroom' || partner.type === 'bathroom');
+    const openKitchenPair = isKitchenPair && prefs.openPlanKitchen;
+
+    if (partner) {
+      const side = findTouchingSide(room, partner);
+      if (side) {
+        const wallLen = wallLengthForSide(side, room.width, room.height);
+        const doorWidth = openKitchenPair ? Math.min(2.6, wallLen * 0.6) : isBathPair ? 0.8 : 0.9;
+        const opening = clampOpeningToWall((wallLen - doorWidth) / 2, doorWidth, wallLen, 0.6, Math.max(0.9, doorWidth));
+        doors.push({ side, offset: opening.offset, width: opening.width, swing: 'in' });
+      }
+    }
+
+    // An ensuite bathroom (and a kitchen in an open-plan pairing) is reached
+    // only through its partner -- it doesn't also need a hallway door.
+    const skipSecondaryDoor = !!partner && (isBathPair ? room.type === 'bathroom' : openKitchenPair && room.type === 'kitchen');
+    if (!skipSecondaryDoor) {
+      const side = (hallway && findTouchingSide(room, hallway))
+        || findAnyTouchingSide(room, otherRooms)
+        || anyExteriorSide(room, plotW, plotL);
+      if (side) {
+        const wallLen = wallLengthForSide(side, room.width, room.height);
+        const opening = clampOpeningToWall((wallLen - 0.9) / 2, 0.9, wallLen, 0.6, 1.1);
+        if (doors.length && doors[0].side === side) {
+          // Already have a door on this wall (the pair door) -- try the
+          // other half of the same wall instead of stacking two openings.
+          const altOffset = opening.offset < wallLen / 2 ? wallLen - opening.width - 0.1 : 0.1;
+          const alt = { side, offset: roundPlan(Math.max(0.05, Math.min(wallLen - opening.width - 0.05, altOffset))), width: opening.width, swing: 'in' };
+          if (!openingsOverlapOnSameWall([doors[0], alt])) doors.push(alt);
+        } else {
+          doors.push({ side, offset: opening.offset, width: opening.width, swing: 'in' });
+        }
+      }
+    }
+
+    room.doors = doors.length ? doors : [{ side: 'bottom', offset: 0.3, width: 0.9, swing: 'in' }];
+    room.doorSide = room.doors[0].side;
+
+    const usedSides = new Set(room.doors.map((d: any) => d.side));
+    const exteriorSides = (['top', 'bottom', 'left', 'right'] as const).filter((side) => isPlotExteriorSide(room, side, plotW, plotL));
+    let windowSides = exteriorSides.filter((side) => !usedSides.has(side));
+    if (!windowSides.length && isHabitableRoomType(room.type) && exteriorSides.length) windowSides = [exteriorSides[0]];
+    room.windows = windowSides.slice(0, 2).map((side) => {
+      const wallLen = wallLengthForSide(side, room.width, room.height);
+      const maxWidth = Math.min(2.4, wallLen * 0.6);
+      const opening = clampOpeningToWall((wallLen - maxWidth) / 2, maxWidth, wallLen, 0.5, 2.4);
+      return { side, offset: opening.offset, width: opening.width };
+    });
+    room.windowSide = room.windows[0]?.side;
+    room.walls = normalizeGeminiWalls(undefined);
+    room.furniture = [];
+  }
+
+  ensureMainEntryDoor(rooms, plotW, plotL);
+}
+
+// Picks which room gets the building's single main entry door: an
+// explicitly entry/foyer-named room if one exists, else the living room,
+// else a room literally typed 'hallway' -- in that priority order, but
+// only among rooms that actually have an exterior wall to put a door on.
+// If none of those three ever has one (an unusual plot), falls back to any
+// public-zone room with an exterior wall, then to any room at all with one.
+function pickEntryRoom(rooms: any[], plotW: number, plotL: number): any | null {
+  const hasExteriorWall = (r: any) => (['top', 'bottom', 'left', 'right'] as const).some((s) => isPlotExteriorSide(r, s, plotW, plotL));
+  const isEntryNamed = (r: any) => /entry|foyer/i.test(String(r.type || '')) || /entry|foyer/i.test(String(r.name || ''));
+
+  const byPriority = [
+    rooms.find((r) => isEntryNamed(r) && hasExteriorWall(r)),
+    rooms.find((r) => r.type === 'living-room' && hasExteriorWall(r)),
+    rooms.find((r) => r.type === 'hallway' && hasExteriorWall(r)),
+  ].find(Boolean);
+  if (byPriority) return byPriority;
+
+  return rooms.find((r) => classifyZone(r.type) === 'public' && hasExteriorWall(r))
+    || rooms.find((r) => hasExteriorWall(r))
+    || null;
+}
+
+// Relocates (or, failing that, drops) any window on `side` that would
+// overlap the new entry door -- tries the clear space on either side of the
+// door on the SAME wall first, then a different exterior wall, since the
+// door takes priority over a window per the main-entry requirement.
+function resolveWindowCollision(room: any, side: string, doorOffset: number, doorWidth: number, plotW: number, plotL: number): void {
+  const wallLen = wallLengthForSide(side, room.width, room.height);
+  const windows = room.windows || [];
+  const doorOpening = { side, offset: doorOffset, width: doorWidth };
+
+  // Seed `result` with every window that ISN'T colliding first (including
+  // ones later in the original array), so a window being relocated can see
+  // them as already-occupied space -- checking only windows processed
+  // earlier in a single left-to-right pass missed a later, untouched
+  // window on the target wall and produced an exact duplicate there.
+  const result: any[] = windows.filter((w: any) => w.side !== side || !openingsOverlapOnSameWall([doorOpening, w]));
+  const needsRelocation = windows.filter((w: any) => w.side === side && openingsOverlapOnSameWall([doorOpening, w]));
+
+  for (const w of needsRelocation) {
+    const winWidth = Number(w.width) || 1.2;
+    const before = doorOffset;
+    const after = wallLen - (doorOffset + doorWidth);
+    if (before >= winWidth + 0.1 && before >= after) {
+      result.push({ ...w, offset: roundPlan(Math.max(0.05, doorOffset - winWidth - 0.1)), width: roundPlan(Math.min(winWidth, before - 0.15)) });
+      continue;
+    }
+    if (after >= winWidth + 0.1) {
+      result.push({ ...w, offset: roundPlan(doorOffset + doorWidth + 0.1), width: roundPlan(Math.min(winWidth, after - 0.15)) });
+      continue;
+    }
+
+    // No room beside the door on this wall -- try a different exterior
+    // wall, but only one that's actually clear: checked against every
+    // door/window already kept for this room, including windows already
+    // relocated earlier in this same pass (otherwise two displaced windows
+    // can land on top of each other, or on top of a window already there).
+    const altSide = (['top', 'bottom', 'left', 'right'] as const).find((s) => {
+      if (s === side || !isPlotExteriorSide(room, s, plotW, plotL)) return false;
+      const altWallLen = wallLengthForSide(s, room.width, room.height);
+      const altWidth = Math.min(winWidth, altWallLen - 0.2);
+      if (altWidth < 0.5) return false;
+      const candidate = { side: s, offset: roundPlan((altWallLen - altWidth) / 2), width: roundPlan(altWidth) };
+      const occupied = [...(room.doors || []), ...result].filter((o: any) => o.side === s);
+      return !occupied.some((o: any) => openingsOverlapOnSameWall([candidate, o]));
+    });
+    if (!altSide) continue; // drop -- no clear exterior wall left for it
+
+    const altWallLen = wallLengthForSide(altSide, room.width, room.height);
+    const altWidth = Math.min(winWidth, altWallLen - 0.2);
+    result.push({ side: altSide, offset: roundPlan((altWallLen - altWidth) / 2), width: roundPlan(altWidth) });
+  }
+
+  room.windows = result;
+}
+
+// Guarantees every generated plan has exactly one door flagged as the main
+// entry, on a genuinely exterior wall: picks the entry room, prefers the
+// wall facing the plot's front (bottom edge) via the same anyExteriorSide
+// priority the rest of this file already uses, then places a 1m-wide door
+// at least 0.5m from either corner, nudged along the wall if needed to
+// clear any door/window already there (relocating a colliding window
+// rather than leaving it overlapped). Room positions are never touched --
+// only this one room's doors/windows arrays change.
+function ensureMainEntryDoor(rooms: any[], plotW: number, plotL: number): void {
+  const entryRoom = pickEntryRoom(rooms, plotW, plotL);
+  if (!entryRoom) return;
+  const side = anyExteriorSide(entryRoom, plotW, plotL);
+  if (!side) return;
+
+  const wallLen = wallLengthForSide(side, entryRoom.width, entryRoom.height);
+  const CORNER_MARGIN = 0.5;
+  const doorWidth = Math.min(1.0, Math.max(0.6, wallLen - CORNER_MARGIN * 2));
+  const minOffset = CORNER_MARGIN;
+  const maxOffset = Math.max(minOffset, wallLen - doorWidth - CORNER_MARGIN);
+  const centered = (wallLen - doorWidth) / 2;
+
+  const existingOnWall = [
+    ...(entryRoom.doors || []).filter((d: any) => d.side === side),
+    ...(entryRoom.windows || []).filter((w: any) => w.side === side),
+  ];
+
+  // Sweep outward from the centred position (still respecting the corner
+  // margin) for the first spot that clears every door/window already on
+  // this wall.
+  let offset = roundPlan(Math.min(maxOffset, Math.max(minOffset, centered)));
+  if (existingOnWall.length) {
+    let found = false;
+    for (let step = 0; step <= wallLen; step += 0.1) {
+      for (const candidate of [centered - step, centered + step]) {
+        const clamped = roundPlan(Math.min(maxOffset, Math.max(minOffset, candidate)));
+        const candidateDoor = { side, offset: clamped, width: doorWidth };
+        if (!existingOnWall.some((o: any) => openingsOverlapOnSameWall([candidateDoor, o]))) {
+          offset = clamped;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+  }
+
+  resolveWindowCollision(entryRoom, side, offset, doorWidth, plotW, plotL);
+
+  entryRoom.doors = [...(entryRoom.doors || []), { side, offset, width: doorWidth, swing: 'in', isMainEntry: true }];
+  entryRoom.doorSide = entryRoom.doors[0].side;
+}
+
+// Does `side` of `room` touch `other`'s matching opposite side, with their
+// 1D extents along that wall overlapping? Used to confirm a door facing
+// `side` actually opens onto a real adjacent room or corridor rect.
+function sidesAreAdjacent(
+  room: { x: number; y: number; width: number; height: number },
+  side: 'top' | 'bottom' | 'left' | 'right',
+  other: { x: number; y: number; width: number; height: number }
+): boolean {
+  // Independently-rounded (1-decimal) coordinates that are meant to
+  // coincide -- e.g. a room's edge and an adjacent zone/hallway rect's edge
+  // -- can differ by up to ~0.1m after rounding even though they're meant
+  // to touch exactly.
+  const TOUCH_EPS = 0.15;
+  const OVERLAP_EPS = 0.05;
+  const overlaps1D = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd - OVERLAP_EPS && aEnd > bStart + OVERLAP_EPS;
+  if (side === 'top') return Math.abs(other.y + other.height - room.y) <= TOUCH_EPS && overlaps1D(room.x, room.x + room.width, other.x, other.x + other.width);
+  if (side === 'bottom') return Math.abs(other.y - (room.y + room.height)) <= TOUCH_EPS && overlaps1D(room.x, room.x + room.width, other.x, other.x + other.width);
+  if (side === 'left') return Math.abs(other.x + other.width - room.x) <= TOUCH_EPS && overlaps1D(room.y, room.y + room.height, other.y, other.y + other.height);
+  return Math.abs(other.x - (room.x + room.width)) <= TOUCH_EPS && overlaps1D(room.y, room.y + room.height, other.y, other.y + other.height);
 }
 
 function practicalArea(type: string | undefined): number {
@@ -997,251 +1489,14 @@ function practicalArea(type: string | undefined): number {
   return 6;
 }
 
-function chunkRooms(rooms: any[], columns: number): any[][] {
-  const rows: any[][] = [];
-  for (let index = 0; index < rooms.length; index += columns) rows.push(rooms.slice(index, index + columns));
-  return rows;
-}
-
-function chooseLayoutColumns(rooms: any[], width: number, length: number): number {
-  const maxColumns = Math.min(4, rooms.length);
-  let bestColumns = 1;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (let columns = 1; columns <= maxColumns; columns++) {
-    const rows = chunkRooms(rooms, columns);
-    const rowWeights = rows.map((row) => row.reduce((sum, room) => sum + room.targetArea, 0));
-    const total = rowWeights.reduce((sum, value) => sum + value, 0) || 1;
-    let score = 0;
-    rows.forEach((row, rowIndex) => {
-      const height = length * rowWeights[rowIndex] / total;
-      const rowTotal = rowWeights[rowIndex] || 1;
-      row.forEach((room) => {
-        const roomWidth = width * room.targetArea / rowTotal;
-        const ratio = Math.max(roomWidth / Math.max(height, 0.1), height / Math.max(roomWidth, 0.1));
-        score += Math.max(0, ratio - 1.8) * 12;
-        if (roomWidth < 1.8 || height < 1.8) score += 100;
-      });
-    });
-    if (score < bestScore) { bestScore = score; bestColumns = columns; }
-  }
-  return bestColumns;
-}
-
-function doorFacingCirculation(row: number, rowCount: number, column: number, columnCount: number): 'top' | 'bottom' | 'left' | 'right' {
-  if (rowCount > 1) return row === 0 ? 'bottom' : 'top';
-  return column === 0 ? 'right' : column === columnCount - 1 ? 'left' : 'bottom';
-}
-
-function exteriorWindowSide(row: number, rowCount: number, column: number, columnCount: number, doorSide: string): 'top' | 'bottom' | 'left' | 'right' {
-  const candidates: Array<'top' | 'bottom' | 'left' | 'right'> = [];
-  if (row === 0) candidates.push('top');
-  if (row === rowCount - 1) candidates.push('bottom');
-  if (column === 0) candidates.push('left');
-  if (column === columnCount - 1) candidates.push('right');
-  return candidates.find((side) => side !== doorSide) || (doorSide === 'top' ? 'bottom' : 'top');
-}
-
 function hasPracticalDimensions(room: any): boolean {
-  const minSide = String(room.type).toLowerCase().includes('bath') ? 1.5 : 2.1;
+  const type = String(room.type).toLowerCase();
+  const minSide = type.includes('bath') ? 1.5 : type.includes('powder') || type.includes('laundry') || type.includes('utility') ? 1.8 : 2.1;
   return room.width >= minSide && room.height >= minSide;
 }
 
 function roundPlan(value: number): number {
   return Math.round(value * 10) / 10;
-}
-
-function generateLegacyAlgorithmicFloorPlan(plotW: number, plotL: number, requestedRooms: any[]) {
-  const rooms: any[] = [];
-  const palette = ['#6366f1', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#14b8a6', '#94a3b8'];
-
-  // Default rooms if empty
-  const roomTypes = requestedRooms.length > 0 ? requestedRooms : [
-    { name: 'Grand Living Room', type: 'living-room', minSize: 22 },
-    { name: 'Open Kitchen & Pantry', type: 'kitchen', minSize: 14 },
-    { name: 'Master Suite', type: 'master-bedroom', minSize: 18 },
-    { name: 'Guest Bedroom', type: 'bedroom', minSize: 14 },
-    { name: 'Primary Bath', type: 'bathroom', minSize: 6 },
-    { name: 'Powder Room', type: 'powder-room', minSize: 4 },
-  ];
-
-  // The quadrant layout below assumes the plot is big enough to hold each
-  // requested room at a sane minimum size without overlap. It isn't — for a
-  // small plot with many/large rooms requested, the hardcoded per-room
-  // minimums (e.g. Math.max(2.5, ...)) blow straight through the available
-  // space, producing rooms that overlap each other and spill outside the
-  // plot boundary. Detect that up front and degrade the same way the
-  // Gemini prompt path already does: collapse to a single full-footprint
-  // room instead of a broken multi-room layout.
-  const plotArea = plotW * plotL;
-  const totalRequestedArea = roomTypes.reduce((sum: number, r: any) => sum + (Number(r.minSize) || 10), 0);
-  // The quadrant layout below has exactly 5 dedicated slots (4 quadrants
-  // plus one bath carved out of the bottom-right quadrant). Anything past
-  // that falls into a placeholder "remaining rooms" loop that places boxes
-  // at fixed coordinates with no awareness of what's already there --
-  // guaranteed overlap with the quadrant rooms, since they already occupy
-  // the entire plot by room 5. Route 6+ rooms to the same honest
-  // single-space degradation as the over-capacity case instead.
-  if (plotW < 2.6 || plotL < 2.6 || totalRequestedArea > plotArea * 0.85 || roomTypes.length > 5) {
-    const w = Math.round(Math.max(1.8, plotW - 0.5) * 10) / 10;
-    const h = Math.round(Math.max(1.8, plotL - 0.5) * 10) / 10;
-    const builtArea = Math.round(w * h * 10) / 10;
-    return {
-      plotWidth: plotW,
-      plotLength: plotL,
-      totalBuiltArea: builtArea,
-      openSpaceArea: Math.max(0, Math.round((plotArea - builtArea) * 10) / 10),
-      architecturalStyle: 'Micro-Living Efficiency',
-      designNotes: `The requested room sizes (totaling ~${Math.round(totalRequestedArea)}m²) exceed what a ${plotW}m x ${plotL}m plot can hold as separate rooms. This layout uses the full footprint as a single multi-functional space instead.`,
-      rooms: [
-        {
-          id: 'room_1',
-          name: 'Multi-Functional Micro-Unit',
-          type: roomTypes[0]?.type || 'living-room',
-          x: Math.round(((plotW - w) / 2) * 10) / 10,
-          y: Math.round(((plotL - h) / 2) * 10) / 10,
-          width: w,
-          height: h,
-          doorSide: 'bottom',
-          windowSide: 'top',
-          color: palette[0],
-          adjacentTo: [],
-          area: builtArea,
-        },
-      ],
-    };
-  }
-
-  // Divide plot into sensible architectural quadrants
-  const halfW = Math.round((plotW / 2) * 10) / 10;
-  const halfL = Math.round((plotL / 2) * 10) / 10;
-
-  let currentIdx = 0;
-
-  // Living Room: Top-Left
-  if (currentIdx < roomTypes.length) {
-    rooms.push({
-      id: `r_${currentIdx + 1}`,
-      name: roomTypes[currentIdx].name,
-      type: roomTypes[currentIdx].type,
-      x: 0.4,
-      y: 0.4,
-      width: Math.max(2.5, halfW - 0.4),
-      height: Math.max(2.5, halfL - 0.4),
-      doorSide: 'bottom',
-      windowSide: 'top',
-      color: palette[0],
-      adjacentTo: ['Dining Area', 'Foyer'],
-      area: Math.round((halfW - 0.4) * (halfL - 0.4) * 10) / 10,
-    });
-    currentIdx++;
-  }
-
-  // Kitchen/Dining: Top-Right
-  if (currentIdx < roomTypes.length) {
-    rooms.push({
-      id: `r_${currentIdx + 1}`,
-      name: roomTypes[currentIdx].name,
-      type: roomTypes[currentIdx].type,
-      x: halfW + 0.2,
-      y: 0.4,
-      width: Math.max(2.2, plotW - halfW - 0.6),
-      height: Math.max(2.5, halfL - 0.4),
-      doorSide: 'left',
-      windowSide: 'top',
-      color: palette[1],
-      adjacentTo: ['Living Room'],
-      area: Math.round((plotW - halfW - 0.6) * (halfL - 0.4) * 10) / 10,
-    });
-    currentIdx++;
-  }
-
-  // Master Bedroom: Bottom-Left
-  if (currentIdx < roomTypes.length) {
-    rooms.push({
-      id: `r_${currentIdx + 1}`,
-      name: roomTypes[currentIdx].name,
-      type: roomTypes[currentIdx].type,
-      x: 0.4,
-      y: halfL + 0.3,
-      width: Math.max(2.5, halfW - 0.4),
-      height: Math.max(2.5, plotL - halfL - 0.7),
-      doorSide: 'right',
-      windowSide: 'left',
-      color: palette[3],
-      adjacentTo: ['Ensuite Bath'],
-      area: Math.round((halfW - 0.4) * (plotL - halfL - 0.7) * 10) / 10,
-    });
-    currentIdx++;
-  }
-
-  // Bedroom 2 / Bath: Bottom-Right
-  if (currentIdx < roomTypes.length) {
-    const subH = Math.round(((plotL - halfL - 0.7) * 0.65) * 10) / 10;
-    rooms.push({
-      id: `r_${currentIdx + 1}`,
-      name: roomTypes[currentIdx].name,
-      type: roomTypes[currentIdx].type,
-      x: halfW + 0.2,
-      y: halfL + 0.3,
-      width: Math.max(2.2, plotW - halfW - 0.6),
-      height: subH,
-      doorSide: 'left',
-      windowSide: 'right',
-      color: palette[4],
-      adjacentTo: ['Corridor'],
-      area: Math.round((plotW - halfW - 0.6) * subH * 10) / 10,
-    });
-    currentIdx++;
-
-    // Bath in remaining bottom-right corner
-    if (currentIdx < roomTypes.length) {
-      rooms.push({
-        id: `r_${currentIdx + 1}`,
-        name: roomTypes[currentIdx].name,
-        type: roomTypes[currentIdx].type,
-        x: halfW + 0.2,
-        y: halfL + 0.3 + subH + 0.2,
-        width: Math.max(2.0, plotW - halfW - 0.6),
-        height: Math.max(1.8, plotL - (halfL + 0.3 + subH + 0.2) - 0.4),
-        doorSide: 'top',
-        windowSide: 'bottom',
-        color: palette[2],
-        adjacentTo: ['Bedroom 2'],
-        area: Math.round((plotW - halfW - 0.6) * Math.max(1.8, plotL - (halfL + 0.3 + subH + 0.2) - 0.4) * 10) / 10,
-      });
-      currentIdx++;
-    }
-  }
-
-  // Any remaining rooms placed intelligently
-  while (currentIdx < roomTypes.length) {
-    rooms.push({
-      id: `r_${currentIdx + 1}`,
-      name: roomTypes[currentIdx].name,
-      type: roomTypes[currentIdx].type,
-      x: Math.round((0.5 + (currentIdx % 2) * (plotW / 2)) * 10) / 10,
-      y: Math.round((0.5 + Math.floor(currentIdx / 2) * 2.5) * 10) / 10,
-      width: 2.8,
-      height: 2.4,
-      doorSide: 'bottom',
-      color: palette[currentIdx % palette.length],
-      area: 6.7,
-    });
-    currentIdx++;
-  }
-
-  const totalBuilt = Math.round(rooms.reduce((acc, r) => acc + (r.width * r.height), 0) * 10) / 10;
-  const totalPlotArea = Math.round(plotW * plotL * 10) / 10;
-
-  return {
-    plotWidth: plotW,
-    plotLength: plotL,
-    totalBuiltArea: totalBuilt,
-    openSpaceArea: Math.max(0, Math.round((totalPlotArea - totalBuilt) * 10) / 10),
-    architecturalStyle: 'Contemporary Biophilic Open-Plan',
-    designNotes: 'Optimized solar path zoning with daytime public living spaces oriented toward expansive exterior openings and quiet night quarters secluded along the private acoustic envelope.',
-    rooms,
-  };
 }
 
 // ----------------------------------------------------
