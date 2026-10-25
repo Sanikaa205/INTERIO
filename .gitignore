@@ -7,7 +7,6 @@ coverage/
 *.log
 .env*
 !.env.example
-
 # 3D view planning (local only)
 tasks.md
 screenshots/

@@ -1,0 +1,462 @@
+{
+  "mode": "baseline",
+  "N": 20,
+  "concurrency": 5,
+  "program": "UI default (FloorPlanWorkflow.tsx)",
+  "at": "2026-10-24T13:54:58.483Z",
+  "summary": {
+    "12x12": {
+      "n": 20,
+      "acceptRate": 0.15,
+      "medianLatencyMs": 8037,
+      "p90LatencyMs": 43303,
+      "rejectReasons": {
+        "overlap": 8,
+        "unreachable-rooms": 4,
+        "hallway-invalid": 2,
+        "room-area-out-of-band": 1,
+        "api-error-or-timeout": 2
+      }
+    },
+    "12x15": {
+      "n": 20,
+      "acceptRate": 0,
+      "medianLatencyMs": 1261,
+      "p90LatencyMs": 1483,
+      "rejectReasons": {
+        "api-error-or-timeout": 20
+      }
+    },
+    "15x20": {
+      "n": 20,
+      "acceptRate": 0,
+      "medianLatencyMs": 1256,
+      "p90LatencyMs": 1308,
+      "rejectReasons": {
+        "api-error-or-timeout": 20
+      }
+    }
+  },
+  "results": [
+    {
+      "plot": "12x12",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 10084
+    },
+    {
+      "plot": "12x12",
+      "i": 3,
+      "accepted": false,
+      "reason": "Kitchen & Dining (1,8,4x4) overlaps Living Room (1,4,4x6) after sanitising",
+      "latencyMs": 12850
+    },
+    {
+      "plot": "12x12",
+      "i": 6,
+      "accepted": false,
+      "reason": "unreachable rooms: Master Bedroom, Master Bathroom",
+      "latencyMs": 8037
+    },
+    {
+      "plot": "12x12",
+      "i": 7,
+      "accepted": false,
+      "reason": "hallway rectangle invalid (normalizeCirculation)",
+      "latencyMs": 4209
+    },
+    {
+      "plot": "12x12",
+      "i": 5,
+      "accepted": false,
+      "reason": "Master Bathroom (0.5,9.5,3x2.5) overlaps Master Bedroom (0.5,6.5,4.5x4.5) after sanitising",
+      "latencyMs": 19829
+    },
+    {
+      "plot": "12x12",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 32671
+    },
+    {
+      "plot": "12x12",
+      "i": 8,
+      "accepted": false,
+      "reason": "Master Bathroom (6.5,10.2,3x1.8) overlaps Master Bedroom (6.5,6.8,5.3x3.5) after sanitising",
+      "latencyMs": 8663
+    },
+    {
+      "plot": "12x12",
+      "i": 9,
+      "accepted": false,
+      "reason": "Master Bathroom (0.5,10.2,4.5x1.8) overlaps Guest Bedroom (0.5,6.8,4.5x3.5) after sanitising",
+      "latencyMs": 7324
+    },
+    {
+      "plot": "12x12",
+      "i": 10,
+      "accepted": false,
+      "reason": "Master Bathroom (6.5,10.2,3x1.8) overlaps Master Bedroom (6.5,6.5,4.5x4) after sanitising",
+      "latencyMs": 7431
+    },
+    {
+      "plot": "12x12",
+      "i": 11,
+      "accepted": false,
+      "reason": "unreachable rooms: Master Bathroom, Powder Room",
+      "latencyMs": 8728
+    },
+    {
+      "plot": "12x12",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 43303
+    },
+    {
+      "plot": "12x12",
+      "i": 12,
+      "accepted": false,
+      "reason": "Powder Room area 7.2m2 outside 0.75-1.6x of target 4.0m2",
+      "latencyMs": 9281
+    },
+    {
+      "plot": "12x12",
+      "i": 13,
+      "accepted": false,
+      "reason": "Master Bathroom (10,9,2x2.8) overlaps Master Bedroom (6.5,7.6,5x4.2) after sanitising",
+      "latencyMs": 6712
+    },
+    {
+      "plot": "12x12",
+      "i": 1,
+      "accepted": false,
+      "reason": "hallway rectangle invalid (normalizeCirculation)",
+      "latencyMs": 48637
+    },
+    {
+      "plot": "12x12",
+      "i": 15,
+      "accepted": false,
+      "reason": "unreachable rooms: Guest Bedroom, Master Bathroom, Powder Room",
+      "latencyMs": 6324
+    },
+    {
+      "plot": "12x12",
+      "i": 18,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1263
+    },
+    {
+      "plot": "12x12",
+      "i": 14,
+      "accepted": false,
+      "reason": "Master Bathroom (7,9.5,2.5x2.5) overlaps Master Bedroom (7,6.8,4.5x4) after sanitising",
+      "latencyMs": 7525
+    },
+    {
+      "plot": "12x12",
+      "i": 19,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1286
+    },
+    {
+      "plot": "12x15",
+      "i": 1,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1260
+    },
+    {
+      "plot": "12x15",
+      "i": 0,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1533
+    },
+    {
+      "plot": "12x15",
+      "i": 2,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1253
+    },
+    {
+      "plot": "12x15",
+      "i": 3,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1252
+    },
+    {
+      "plot": "12x15",
+      "i": 4,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1264
+    },
+    {
+      "plot": "12x12",
+      "i": 16,
+      "accepted": false,
+      "reason": "unreachable rooms: Guest Bedroom, Master Bathroom",
+      "latencyMs": 6358
+    },
+    {
+      "plot": "12x12",
+      "i": 17,
+      "accepted": false,
+      "reason": "Master Bathroom (7,10,3x2) overlaps Master Bedroom (7,6.8,4.5x4) after sanitising",
+      "latencyMs": 6069
+    },
+    {
+      "plot": "12x15",
+      "i": 5,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1264
+    },
+    {
+      "plot": "12x15",
+      "i": 6,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "12x15",
+      "i": 7,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1326
+    },
+    {
+      "plot": "12x15",
+      "i": 8,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1226
+    },
+    {
+      "plot": "12x15",
+      "i": 9,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1218
+    },
+    {
+      "plot": "12x15",
+      "i": 10,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1483
+    },
+    {
+      "plot": "12x15",
+      "i": 11,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1219
+    },
+    {
+      "plot": "12x15",
+      "i": 14,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1161
+    },
+    {
+      "plot": "12x15",
+      "i": 12,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1263
+    },
+    {
+      "plot": "12x15",
+      "i": 13,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1188
+    },
+    {
+      "plot": "12x15",
+      "i": 15,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1262
+    },
+    {
+      "plot": "12x15",
+      "i": 16,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "12x15",
+      "i": 17,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1269
+    },
+    {
+      "plot": "12x15",
+      "i": 19,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1259
+    },
+    {
+      "plot": "12x15",
+      "i": 18,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1306
+    },
+    {
+      "plot": "15x20",
+      "i": 0,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "15x20",
+      "i": 1,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1245
+    },
+    {
+      "plot": "15x20",
+      "i": 3,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1231
+    },
+    {
+      "plot": "15x20",
+      "i": 2,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "15x20",
+      "i": 4,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1296
+    },
+    {
+      "plot": "15x20",
+      "i": 5,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1291
+    },
+    {
+      "plot": "15x20",
+      "i": 6,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1308
+    },
+    {
+      "plot": "15x20",
+      "i": 8,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1218
+    },
+    {
+      "plot": "15x20",
+      "i": 7,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1260
+    },
+    {
+      "plot": "15x20",
+      "i": 9,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1227
+    },
+    {
+      "plot": "15x20",
+      "i": 10,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1229
+    },
+    {
+      "plot": "15x20",
+      "i": 11,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "15x20",
+      "i": 13,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1230
+    },
+    {
+      "plot": "15x20",
+      "i": 12,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1256
+    },
+    {
+      "plot": "15x20",
+      "i": 14,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1261
+    },
+    {
+      "plot": "15x20",
+      "i": 15,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1219
+    },
+    {
+      "plot": "15x20",
+      "i": 16,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1201
+    },
+    {
+      "plot": "15x20",
+      "i": 18,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1198
+    },
+    {
+      "plot": "15x20",
+      "i": 17,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1199
+    },
+    {
+      "plot": "15x20",
+      "i": 19,
+      "accepted": false,
+      "reason": "http: {\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more in",
+      "latencyMs": 1325
+    }
+  ]
+}

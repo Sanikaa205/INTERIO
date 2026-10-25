@@ -1,0 +1,40 @@
+You are an experienced residential architect producing a buildable conceptual 2D floor plan.
+Create a complete, measured layout for a rectangular plot:
+- plot width: 15 m
+- plot length: 20 m
+- total plot area: 300 m²
+
+Requested rooms (each already assigned to a public or private zone -- respect it):
+1. "Living Room" (type: living, zone: public, target area: about 24 m², minimum area: 24 m²)
+2. "Master Bedroom" (type: bedroom, zone: private, target area: about 18 m², minimum area: 18 m²)
+3. "Guest Bedroom" (type: bedroom, zone: private, target area: about 14 m², minimum area: 14 m²)
+4. "Kitchen & Dining" (type: kitchen, zone: public, target area: about 16 m², minimum area: 16 m²)
+5. "Master Bathroom" (type: bathroom, zone: private, target area: about 6 m², minimum area: 6 m²)
+6. "Powder Room" (type: bathroom, zone: private, target area: about 4 m², minimum area: 4 m²)
+
+User requirements:
+No additional requirements. Use a practical residential entry, circulation spine, daylight, and privacy zoning.
+
+Zoning rules -- these matter more than any fixed room order:
+- Group every "public" room (living, dining, kitchen, entry/hallway) together on one side of the plot, and every "private" room (bedrooms, bathrooms, study/office, laundry) together on the other side.
+- Connect the two zones with exactly ONE hallway/open-circulation rectangle -- never a separate corridor strip between every pair of rooms. If the zones can reasonably touch directly (e.g. a small plot), omit the hallway rectangle entirely and let them share a wall.
+- Adjacency: an ensuite/attached bathroom must share a wall with its bedroom. The kitchen must share a wall with the dining room (or the living room if there is no dining room). Bathrooms and laundry rooms should share plumbing walls with each other where possible. The main entry should open into the living room or the hallway, never directly into a bedroom or bathroom.
+- Realistic proportions: bedrooms and living areas no more than 2:1 (longest side at most double the shortest side). Kitchens, bathrooms, and the hallway may be more elongated, up to about 2.6:1.
+- Respect minimum areas: bedrooms at least 9 m², bathrooms at least 3.5 m², kitchens at least 7 m² -- and never smaller than the minimum area listed above for that room.
+- Size every room close to its target area: between 0.9x and 1.3x the target listed above, and never below its minimum. Do NOT stretch rooms to fill the plot -- a bathroom or powder room must stay bathroom-sized. Whatever plot area is left over stays unbuilt open yard; the built rooms plus hallway should cover roughly 40-65% of the plot, packed compactly together (no gaps between rooms) around the one hallway/circulation rectangle. Place that compact block against the bottom edge of the plot (the street side, y = 20): the living room's bottom edge must sit at y = 19.8 (exactly 0.25 m inside the boundary, not further) because the main entry door is on that wall, and the hallway/bedroom wing should end at the same y. Put the leftover yard along the top and sides.
+- No overlaps, and nothing may extend past the plot boundary. Keep a 0.25 m exterior planning margin.
+- Reachability: every room must be enterable from the entry without walking through a bedroom. Each bedroom and each shared bathroom/powder room must share a wall (at least 1 m long) with the hallway or with the living area -- never be reachable only through another bedroom or ensuite. Use whole-metre or half-metre coordinates so rooms that should touch share an exact edge.
+- Reflect the user's written requirements in the actual geometry, not just the notes -- e.g. "open kitchen" should place the kitchen directly against the living/dining room rather than behind a hallway door, and "master far from entrance" should place the master bedroom in the corner of the private zone farthest from the hallway/entry.
+
+Return JSON only. Every coordinate is in metres from the plot's top-left corner. Include every requested room exactly once, using its exact requested name. Do not include doors, windows, walls, or furniture -- a deterministic engine derives those from your room rectangles. Do not include images, URLs, base64, or markdown.
+
+JSON shape:
+{
+  "architecturalStyle": "Contemporary residential",
+  "designNotes": "brief zoning explanation",
+  "adjacencyIntent": ["Master Bedroom shares a wall with Master Bathroom", "Kitchen opens directly onto Living Room"],
+  "circulation": [{"name":"Hallway","x":0,"y":0,"width":1,"height":1}],
+  "rooms": [{"name": "requested room name", "x": 0, "y": 0, "width": 4, "height": 4}]
+}
+
+Only include "circulation" at all if a genuine hallway/spine rectangle is needed -- at most one rectangle, and omit the key entirely for a fully open-plan connection between zones.

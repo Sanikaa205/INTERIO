@@ -24,6 +24,7 @@ import { FloorPlanWorkflow } from './components/FloorPlanWorkflow';
 import { InteriorDesignWorkflow } from './components/InteriorDesignWorkflow';
 import { ReconstructionWorkflow } from './components/ReconstructionWorkflow';
 import { Shared3DView } from './components/Shared3DView';
+import { FloorPlan3D } from './components/FloorPlan3D';
 import { Menu, ArrowLeft, Layers, Box, Check, X } from 'lucide-react';
 
 export default function App() {
@@ -417,13 +418,14 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'floorplan' && (
+          {/* Keep FloorPlanWorkflow mounted (but hidden) while in 3D so the plan state is preserved when going Back */}
+          <div className={(activeTab === 'floorplan') ? '' : 'hidden'}>
             <FloorPlanWorkflow
               onView3D={handleViewFloorPlan3D}
               onSaveProject={triggerSaveFloorPlan}
               onBackToHome={() => setActiveTab('dashboard')}
             />
-          )}
+          </div>
 
           {activeTab === 'interior' && (
             <InteriorDesignWorkflow
@@ -445,22 +447,30 @@ export default function App() {
             />
           )}
 
-          {activeTab === '3d-studio' && (
+          {activeTab === '3d-studio' && active3DType === 'floorplan' && active3DData && (
+            <FloorPlan3D
+              plan={active3DData as FloorPlanResult}
+              title={active3DTitle}
+              onBack={() => setActiveTab('floorplan')}
+              onBackToHome={() => setActiveTab('dashboard')}
+              onSaveProject={() => triggerSaveFloorPlan(active3DData as FloorPlanResult)}
+            />
+          )}
+
+          {activeTab === '3d-studio' && active3DType !== 'floorplan' && (
             <Shared3DView
               data={active3DData}
               projectType={active3DType}
               projectTitle={active3DTitle}
               onBack={() => {
-                if (active3DType === 'floorplan') setActiveTab('floorplan');
-                else if (active3DType === 'interior') setActiveTab('interior');
+                if (active3DType === 'interior') setActiveTab('interior');
                 else if (active3DType === 'renovation') setActiveTab('reconstruction');
                 else setActiveTab('dashboard');
               }}
               onBackToHome={() => setActiveTab('dashboard')}
               onSaveProject={() => {
                 if (active3DData) {
-                  if (active3DType === 'floorplan') triggerSaveFloorPlan(active3DData as FloorPlanResult);
-                  else if (active3DType === 'interior') triggerSaveInterior(active3DData as InteriorDesignResult);
+                  if (active3DType === 'interior') triggerSaveInterior(active3DData as InteriorDesignResult);
                   else triggerSaveReconstruction(active3DData as ReconstructionData);
                 }
               }}

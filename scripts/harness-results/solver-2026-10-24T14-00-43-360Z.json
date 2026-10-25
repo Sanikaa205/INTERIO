@@ -1,0 +1,452 @@
+{
+  "mode": "solver",
+  "N": 20,
+  "concurrency": 1,
+  "program": "UI default (FloorPlanWorkflow.tsx)",
+  "at": "2026-10-24T14:00:43.357Z",
+  "summary": {
+    "12x12": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 1568,
+      "p90LatencyMs": 2157,
+      "rejectReasons": {}
+    },
+    "12x15": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 2468,
+      "p90LatencyMs": 2991,
+      "rejectReasons": {}
+    },
+    "15x20": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 3934,
+      "p90LatencyMs": 5447,
+      "rejectReasons": {}
+    }
+  },
+  "results": [
+    {
+      "plot": "12x12",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1892
+    },
+    {
+      "plot": "12x12",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 898
+    },
+    {
+      "plot": "12x12",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1091
+    },
+    {
+      "plot": "12x12",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1190
+    },
+    {
+      "plot": "12x12",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1959
+    },
+    {
+      "plot": "12x12",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2043
+    },
+    {
+      "plot": "12x12",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2150
+    },
+    {
+      "plot": "12x12",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2157
+    },
+    {
+      "plot": "12x12",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2186
+    },
+    {
+      "plot": "12x12",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1525
+    },
+    {
+      "plot": "12x12",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1441
+    },
+    {
+      "plot": "12x12",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1427
+    },
+    {
+      "plot": "12x12",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 945
+    },
+    {
+      "plot": "12x12",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1768
+    },
+    {
+      "plot": "12x12",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1898
+    },
+    {
+      "plot": "12x12",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1170
+    },
+    {
+      "plot": "12x12",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1575
+    },
+    {
+      "plot": "12x12",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1100
+    },
+    {
+      "plot": "12x12",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1405
+    },
+    {
+      "plot": "12x12",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1568
+    },
+    {
+      "plot": "12x15",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2789
+    },
+    {
+      "plot": "12x15",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2543
+    },
+    {
+      "plot": "12x15",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2164
+    },
+    {
+      "plot": "12x15",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2224
+    },
+    {
+      "plot": "12x15",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2468
+    },
+    {
+      "plot": "12x15",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2882
+    },
+    {
+      "plot": "12x15",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2645
+    },
+    {
+      "plot": "12x15",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2870
+    },
+    {
+      "plot": "12x15",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2991
+    },
+    {
+      "plot": "12x15",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2276
+    },
+    {
+      "plot": "12x15",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3352
+    },
+    {
+      "plot": "12x15",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2047
+    },
+    {
+      "plot": "12x15",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1871
+    },
+    {
+      "plot": "12x15",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2315
+    },
+    {
+      "plot": "12x15",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2516
+    },
+    {
+      "plot": "12x15",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2822
+    },
+    {
+      "plot": "12x15",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 1925
+    },
+    {
+      "plot": "12x15",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2335
+    },
+    {
+      "plot": "12x15",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2271
+    },
+    {
+      "plot": "12x15",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2090
+    },
+    {
+      "plot": "15x20",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 5447
+    },
+    {
+      "plot": "15x20",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 5604
+    },
+    {
+      "plot": "15x20",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3354
+    },
+    {
+      "plot": "15x20",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3610
+    },
+    {
+      "plot": "15x20",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3934
+    },
+    {
+      "plot": "15x20",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3637
+    },
+    {
+      "plot": "15x20",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4936
+    },
+    {
+      "plot": "15x20",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4966
+    },
+    {
+      "plot": "15x20",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4110
+    },
+    {
+      "plot": "15x20",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 5287
+    },
+    {
+      "plot": "15x20",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3715
+    },
+    {
+      "plot": "15x20",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4967
+    },
+    {
+      "plot": "15x20",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4543
+    },
+    {
+      "plot": "15x20",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3922
+    },
+    {
+      "plot": "15x20",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3431
+    },
+    {
+      "plot": "15x20",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3649
+    },
+    {
+      "plot": "15x20",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3892
+    },
+    {
+      "plot": "15x20",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 3045
+    },
+    {
+      "plot": "15x20",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 2806
+    },
+    {
+      "plot": "15x20",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "latencyMs": 4330
+    }
+  ]
+}
