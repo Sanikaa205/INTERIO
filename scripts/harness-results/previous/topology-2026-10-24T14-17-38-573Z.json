@@ -1,0 +1,678 @@
+{
+  "mode": "topology",
+  "N": 20,
+  "concurrency": 1,
+  "program": "UI default (FloorPlanWorkflow.tsx)",
+  "at": "2026-10-24T14:17:38.563Z",
+  "summary": {
+    "12x12": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 8619,
+      "p90LatencyMs": 14558,
+      "hintUsedRate": 0.9,
+      "rejectReasons": {}
+    },
+    "12x15": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 9020,
+      "p90LatencyMs": 17335,
+      "hintUsedRate": 1,
+      "rejectReasons": {}
+    },
+    "15x20": {
+      "n": 20,
+      "acceptRate": 1,
+      "medianLatencyMs": 15683,
+      "p90LatencyMs": 20833,
+      "hintUsedRate": 0.75,
+      "rejectReasons": {}
+    }
+  },
+  "results": [
+    {
+      "plot": "12x12",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 14558
+    },
+    {
+      "plot": "12x12",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8069
+    },
+    {
+      "plot": "12x12",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7385
+    },
+    {
+      "plot": "12x12",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8619
+    },
+    {
+      "plot": "12x12",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 6637
+    },
+    {
+      "plot": "12x12",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7851
+    },
+    {
+      "plot": "12x12",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9481
+    },
+    {
+      "plot": "12x12",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9155
+    },
+    {
+      "plot": "12x12",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 10204
+    },
+    {
+      "plot": "12x12",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7264
+    },
+    {
+      "plot": "12x12",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7139
+    },
+    {
+      "plot": "12x12",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7187
+    },
+    {
+      "plot": "12x12",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7041
+    },
+    {
+      "plot": "12x12",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 12553
+    },
+    {
+      "plot": "12x12",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9187
+    },
+    {
+      "plot": "12x12",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 12575
+    },
+    {
+      "plot": "12x12",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 6999
+    },
+    {
+      "plot": "12x12",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 15619
+    },
+    {
+      "plot": "12x12",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7937
+    },
+    {
+      "plot": "12x12",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 10237
+    },
+    {
+      "plot": "12x15",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 18398
+    },
+    {
+      "plot": "12x15",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 17335
+    },
+    {
+      "plot": "12x15",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9020
+    },
+    {
+      "plot": "12x15",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9638
+    },
+    {
+      "plot": "12x15",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8991
+    },
+    {
+      "plot": "12x15",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8688
+    },
+    {
+      "plot": "12x15",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7786
+    },
+    {
+      "plot": "12x15",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8106
+    },
+    {
+      "plot": "12x15",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7259
+    },
+    {
+      "plot": "12x15",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 16608
+    },
+    {
+      "plot": "12x15",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9754
+    },
+    {
+      "plot": "12x15",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 6878
+    },
+    {
+      "plot": "12x15",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8224
+    },
+    {
+      "plot": "12x15",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 7556
+    },
+    {
+      "plot": "12x15",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8104
+    },
+    {
+      "plot": "12x15",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8570
+    },
+    {
+      "plot": "12x15",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 14700
+    },
+    {
+      "plot": "12x15",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9129
+    },
+    {
+      "plot": "12x15",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9490
+    },
+    {
+      "plot": "12x15",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 10020
+    },
+    {
+      "plot": "15x20",
+      "i": 0,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)",
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 16035
+    },
+    {
+      "plot": "15x20",
+      "i": 1,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 20112
+    },
+    {
+      "plot": "15x20",
+      "i": 2,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 11315
+    },
+    {
+      "plot": "15x20",
+      "i": 3,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 10132
+    },
+    {
+      "plot": "15x20",
+      "i": 4,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 5993
+    },
+    {
+      "plot": "15x20",
+      "i": 5,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8401
+    },
+    {
+      "plot": "15x20",
+      "i": 6,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8807
+    },
+    {
+      "plot": "15x20",
+      "i": 7,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9504
+    },
+    {
+      "plot": "15x20",
+      "i": 8,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 8292
+    },
+    {
+      "plot": "15x20",
+      "i": 9,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 10704
+    },
+    {
+      "plot": "15x20",
+      "i": 10,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 9220
+    },
+    {
+      "plot": "15x20",
+      "i": 11,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 1,
+      "topologyErrors": [],
+      "latencyMs": 11072
+    },
+    {
+      "plot": "15x20",
+      "i": 12,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 34525
+    },
+    {
+      "plot": "15x20",
+      "i": 13,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)",
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 16248
+    },
+    {
+      "plot": "15x20",
+      "i": 14,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)",
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 20022
+    },
+    {
+      "plot": "15x20",
+      "i": 15,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 18177
+    },
+    {
+      "plot": "15x20",
+      "i": 16,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)",
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 15683
+    },
+    {
+      "plot": "15x20",
+      "i": 17,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 19502
+    },
+    {
+      "plot": "15x20",
+      "i": 18,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": true,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)"
+      ],
+      "latencyMs": 20833
+    },
+    {
+      "plot": "15x20",
+      "i": 19,
+      "accepted": true,
+      "reason": null,
+      "hintUsed": false,
+      "topologyAttempts": 2,
+      "topologyErrors": [
+        "the reply could not be used (Gemini model gemini-3.5-flash-lite timed out after 10000ms)",
+        "rooms: \"Master Bathroom\" has type \"bathroom\", not \"master-bathroom\""
+      ],
+      "latencyMs": 19117
+    }
+  ]
+}

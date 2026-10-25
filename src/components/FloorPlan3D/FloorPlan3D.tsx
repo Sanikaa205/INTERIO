@@ -151,7 +151,7 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
       </div>
 
       {/* 3D Canvas */}
-      <div ref={setContainer} className="relative w-full h-[70vh] min-h-[320px] max-h-[720px] rounded-lg md:h-[560px]" style={{ touchAction: 'none' }} onDoubleClick={resetView}>
+      <div ref={setContainer} className="relative w-full flex-1 min-h-[320px] rounded-lg" style={{ touchAction: 'none' }} onDoubleClick={resetView}>
         <Toolbar
           showCeilings={showCeilings}
           cutaway={cutaway}
