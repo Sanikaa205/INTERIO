@@ -6,6 +6,9 @@ export interface FurnitureSuggestion extends Partial<FurnitureItem> {
   width: number;
   depth: number;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  clearance?: number;
+  relativeTo?: string;
+  relativeSide?: 'north' | 'south' | 'east' | 'west';
 }
 
 export interface LayoutOpening {
@@ -19,12 +22,26 @@ export interface LayoutRoom {
   width: number;
   depth: number;
   openings?: LayoutOpening[];
+  doorClearance?: number;
+}
+
+export function defaultRoomOpenings(width: number, depth: number): LayoutOpening[] {
+  const doorWidth = Math.min(0.9, width * 0.18);
+  const doorStart = Math.max(0.3, Math.min(width - doorWidth - 0.3, width * 0.14));
+  return [
+    { wall: 'south', start: doorStart, end: doorStart + doorWidth, type: 'door' },
+    { wall: 'north', start: width * 0.32, end: width * 0.68, type: 'window' },
+  ];
+}
+
+export function roomDoorClearance(width: number, depth: number): number {
+  return Math.min(CLEARANCE, Math.max(0.22, Math.min(width, depth) * 0.08));
 }
 
 const CLEARANCE = 0.75;
 const ROTATIONS = [0, 90, 180, 270] as const;
 
-function footprint(item: Pick<FurnitureItem, 'x' | 'y' | 'width' | 'depth' | 'rotation'>) {
+export function furnitureFootprint(item: Pick<FurnitureItem, 'x' | 'y' | 'width' | 'depth' | 'rotation'>) {
   const rotated = (item.rotation || 0) % 180 !== 0;
   return { x: item.x, y: item.y, width: rotated ? item.depth : item.width, depth: rotated ? item.width : item.depth };
 }
@@ -35,12 +52,13 @@ function rectanglesOverlap(a: { x: number; y: number; width: number; depth: numb
 
 function hitsOpening(item: { x: number; y: number; width: number; depth: number }, room: LayoutRoom) {
   return (room.openings || []).some((opening) => {
+    const openingClearance = opening.type === 'door' ? room.doorClearance ?? CLEARANCE : 0.3;
     const spanStart = opening.wall === 'north' || opening.wall === 'south' ? item.x : item.y;
     const spanEnd = spanStart + (opening.wall === 'north' || opening.wall === 'south' ? item.width : item.depth);
-    const wallTouch = opening.wall === 'north' ? item.y < CLEARANCE
-      : opening.wall === 'south' ? item.y + item.depth > room.depth - CLEARANCE
-      : opening.wall === 'west' ? item.x < CLEARANCE : item.x + item.width > room.width - CLEARANCE;
-    return wallTouch && spanStart < opening.end + (opening.type === 'door' ? CLEARANCE : 0.3) && spanEnd > opening.start - (opening.type === 'door' ? CLEARANCE : 0.3);
+    const wallTouch = opening.wall === 'north' ? item.y < openingClearance
+      : opening.wall === 'south' ? item.y + item.depth > room.depth - openingClearance
+      : opening.wall === 'west' ? item.x < openingClearance : item.x + item.width > room.width - openingClearance;
+    return wallTouch && spanStart < opening.end + openingClearance && spanEnd > opening.start - openingClearance;
   });
 }
 
@@ -58,11 +76,18 @@ function wallPenalty(item: { x: number; y: number; width: number; depth: number 
 export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room: LayoutRoom): FurnitureItem[] {
   if (!(room.width > 0 && room.depth > 0)) throw new Error('Room dimensions must be greater than zero.');
   const placed: FurnitureItem[] = [];
-  for (const [index, suggestion] of suggestions.entries()) {
+  const placedRelationships = new Map<string, string>();
+  const ordered = suggestions.map((suggestion, index) => ({ suggestion, index })).sort((a, b) => {
+    const aDependent = Boolean(a.suggestion.relativeTo), bDependent = Boolean(b.suggestion.relativeTo);
+    return Number(aDependent) - Number(bDependent) || a.index - b.index;
+  });
+  for (const { suggestion, index } of ordered) {
     const width0 = Math.max(0.25, Number(suggestion.width) || 0.8);
     const depth0 = Math.max(0.25, Number(suggestion.depth) || 0.8);
     let best: (FurnitureItem & { score: number }) | null = null;
-    for (const rotation of ROTATIONS) {
+    const preferredRotation = Number(suggestion.rotation);
+    const rotations = ROTATIONS.slice().sort((a, b) => Number(b === preferredRotation) - Number(a === preferredRotation));
+    for (const rotation of rotations) {
       const rotated = rotation % 180 !== 0;
       const width = rotated ? depth0 : width0;
       const depth = rotated ? width0 : depth0;
@@ -73,20 +98,50 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
         for (let x = 0; x <= room.width - width + 1e-6; x += 0.1) {
           const candidate = { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, width, depth };
           if (hitsOpening(candidate, room)) continue;
-          if (placed.some((other) => rectanglesOverlap(candidate, footprint(other)))) continue;
-          const clearanceHit = suggestion.category !== 'decor' && placed.some((other) => other.category !== 'decor' && rectanglesOverlap(
-            { x: candidate.x - CLEARANCE, y: candidate.y - CLEARANCE, width: candidate.width + CLEARANCE * 2, depth: candidate.depth + CLEARANCE * 2 }, footprint(other),
-          ));
+          const isRug = /rug/i.test(suggestion.name);
+          const collides = placed.some((other) => {
+            if (isRug || /rug/i.test(other.name)) return false;
+            return rectanglesOverlap(candidate, furnitureFootprint(other));
+          });
+          if (collides) continue;
+          const clearanceHit = suggestion.category !== 'decor' && placed.some((other) => {
+            if (suggestion.relativeTo === other.id) return false;
+            if (suggestion.relativeTo && placedRelationships.get(other.id) === suggestion.relativeTo) return false;
+            if (other.category === 'decor' || /rug/i.test(other.name)) return false;
+            const clearance = Math.max(suggestion.clearance ?? CLEARANCE, other.clearance ?? CLEARANCE);
+            return rectanglesOverlap(
+              { x: candidate.x - clearance, y: candidate.y - clearance, width: candidate.width + clearance * 2, depth: candidate.depth + clearance * 2 }, furnitureFootprint(other),
+            );
+          });
           if (clearanceHit) continue;
           const centerDistance = Math.hypot(candidate.x + width / 2 - room.width / 2, candidate.y + depth / 2 - room.depth / 2);
-          const score = wallPenalty(candidate, room, suggestion.preferredWall) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
+          const anchorDistance = Number.isFinite(suggestion.x) && Number.isFinite(suggestion.y)
+            ? Math.hypot(candidate.x - Number(suggestion.x), candidate.y - Number(suggestion.y))
+            : 0;
+          const related = suggestion.relativeTo ? placed.find((other) => other.id === suggestion.relativeTo) : undefined;
+          let relationshipPenalty = 0;
+          if (related && suggestion.relativeSide) {
+            const target = furnitureFootprint(related);
+            const gap = 0.1;
+            const targetX = suggestion.relativeSide === 'west' ? target.x - gap - width
+              : suggestion.relativeSide === 'east' ? target.x + target.width + gap
+              : target.x + (target.width - width) / 2;
+            const targetY = suggestion.relativeSide === 'north' ? target.y - gap - depth
+              : suggestion.relativeSide === 'south' ? target.y + target.depth + gap
+              : target.y + (target.depth - depth) / 2;
+            relationshipPenalty = Math.hypot(candidate.x - targetX, candidate.y - targetY);
+          }
+          const rotationPenalty = Number.isFinite(preferredRotation) && rotation !== preferredRotation ? 20 : 0;
+          const score = relationshipPenalty * 12 + anchorDistance * (related ? 0.15 : 4) + rotationPenalty + (related ? 0 : wallPenalty(candidate, room, suggestion.preferredWall)) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
           if (!best || score < best.score) best = { ...candidate, score, rotation, width: width0, depth: depth0 } as FurnitureItem & { score: number };
         }
       }
     }
     if (!best) continue; // Gracefully omit a suggested item that cannot fit.
     const { score: _score, ...item } = best;
-    placed.push({ ...item, id: suggestion.id || `f_${index + 1}`, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall });
+    const id = suggestion.id || `f_${index + 1}`;
+    placed.push({ ...item, id, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall, clearance: suggestion.clearance });
+    if (suggestion.relativeTo) placedRelationships.set(id, suggestion.relativeTo);
   }
   return placed;
 }

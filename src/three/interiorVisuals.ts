@@ -142,7 +142,61 @@ export function createFurnitureModel(
     }
   };
 
-  if (item.category === 'seating') {
+  if (/refrigerator|fridge/.test(name)) {
+    group.userData.fixtureKind = 'refrigerator';
+    round([w * 0.94, Math.min(h, 1.9), d * 0.9], [0, Math.min(h, 1.9) / 2, 0], material('#cbd0cf', 0.28, 0.42), 0.055);
+    const doorH = Math.min(h, 1.9);
+    round([w * 0.88, 0.018, 0.018], [0, doorH * 0.58, d * 0.46], metal, 0.006);
+    for (const x of [-w * 0.3, w * 0.3]) round([0.025, doorH * 0.18, 0.035], [x, doorH * 0.78, d * 0.48], metal, 0.012);
+  } else if (/toilet|wc|water closet/.test(name)) {
+    group.userData.fixtureKind = 'toilet';
+    const porcelain = material('#f2f1ec', 0.22);
+    round([w * 0.78, 0.38, d * 0.28], [0, 0.2, -d * 0.28], porcelain, 0.045);
+    const bowl = mesh(new THREE.SphereGeometry(Math.min(w, d) * 0.4, 20, 14), porcelain);
+    bowl.scale.set(1, 0.65, 1.18);
+    bowl.position.set(0, 0.25, d * 0.12);
+    group.add(bowl);
+    const seat = mesh(new THREE.TorusGeometry(Math.min(w, d) * 0.29, 0.025, 8, 24), darkWood);
+    seat.rotation.x = Math.PI / 2;
+    seat.position.set(0, 0.43, d * 0.12);
+    group.add(seat);
+  } else if (/shower|walk-in/.test(name)) {
+    group.userData.fixtureKind = 'shower';
+    const showerHeight = Math.max(2, h);
+    const tray = material('#e4e4df', 0.38);
+    round([w * 0.96, 0.08, d * 0.96], [0, 0.04, 0], tray, 0.035);
+    const glass = new THREE.MeshStandardMaterial({ color: '#b8e4ec', roughness: 0.16, metalness: 0.12, transparent: true, opacity: 0.38, side: THREE.DoubleSide, wireframe });
+    round([0.035, showerHeight, d * 0.94], [-w * 0.47, showerHeight / 2, 0], glass, 0.006);
+    round([w * 0.94, showerHeight, 0.035], [0, showerHeight / 2, -d * 0.47], glass, 0.006);
+    addCylinder(group, 0.04, 0.04, 0.035, [w * 0.27, 0.12, -d * 0.27], metal, 12);
+  } else if (/vanity|basin|bathroom sink/.test(name)) {
+    group.userData.fixtureKind = 'vanity';
+    round([w * 0.96, Math.min(h, 0.78), d * 0.86], [0, Math.min(h, 0.78) / 2, 0], wood, 0.025);
+    round([w * 1.02, 0.065, d * 0.94], [0, Math.min(h, 0.78) + 0.025, 0], lightFabric, 0.035);
+    const basin = mesh(new THREE.SphereGeometry(Math.min(w * 0.27, d * 0.34), 20, 12), material('#fbfaf5', 0.2));
+    basin.scale.set(1.35, 0.36, 1);
+    basin.position.set(0, Math.min(h, 0.78) + 0.067, 0);
+    group.add(basin);
+    addCylinder(group, 0.018, 0.018, 0.13, [0, Math.min(h, 0.78) + 0.13, -d * 0.34], metal, 10);
+  } else if (/kitchen|counter|cabinet run|worktop|hob|cooktop/.test(name) && item.category === 'storage') {
+    group.userData.fixtureKind = 'kitchen-counter';
+    const cabinetH = Math.min(h, 0.88);
+    round([w * 0.98, cabinetH, d * 0.88], [0, cabinetH / 2, 0], wood, 0.018);
+    round([w * 1.02, 0.055, d * 0.98], [0, cabinetH + 0.025, 0], material('#d8d2c6', 0.3), 0.015);
+    const doors = Math.max(2, Math.floor(w / 0.55));
+    for (let i = 0; i < doors; i++) {
+      const x = -w * 0.42 + (w * 0.84 * i) / doors;
+      round([w * 0.84 / doors - 0.025, cabinetH * 0.72, 0.018], [x + w * 0.42 / doors, cabinetH * 0.47, d * 0.45], darkWood, 0.01);
+    }
+    // Countertop sink and four-burner hob are separate, readable plan features.
+    round([w * 0.22, 0.018, d * 0.54], [-w * 0.28, cabinetH + 0.062, 0], material('#64716f', 0.24, 0.45), 0.03);
+    for (const x of [w * 0.22, w * 0.36]) for (const z of [-d * 0.2, d * 0.2]) {
+      const burner = mesh(new THREE.TorusGeometry(Math.min(0.075, d * 0.12), 0.012, 6, 16), metal);
+      burner.rotation.x = Math.PI / 2;
+      burner.position.set(x, cabinetH + 0.064, z);
+      group.add(burner);
+    }
+  } else if (item.category === 'seating') {
     const chair = /armchair|accent chair|lounge chair/.test(name);
     const seatH = Math.min(0.47, Math.max(0.34, h * 0.36));
     const legH = seatH * 0.42;
@@ -213,6 +267,7 @@ export function createFurnitureModel(
     const border = material('#8d7862', 0.94);
     for (const z of [-d / 2 + 0.04, d / 2 - 0.04]) round([w * 0.92, 0.008, 0.012], [0, 0.018, z], border, 0.003);
   } else if (/bed/.test(name)) {
+    group.userData.fixtureKind = 'bed';
     const frameH = 0.24;
     round([w, frameH, d], [0, frameH / 2, 0], darkWood, 0.035);
     round([w * 0.96, 0.2, d * 0.91], [0, frameH + 0.1, 0], lightFabric, 0.075);

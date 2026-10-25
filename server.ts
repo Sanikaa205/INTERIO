@@ -7,7 +7,8 @@ import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { Client, handle_file } from '@gradio/client';
-import { optimizeFurnitureLayout, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
+import { defaultRoomOpenings, optimizeFurnitureLayout, roomDoorClearance, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
+import { createRoomFurnitureSuggestions } from './src/services/interiorFurniture';
 import { matchFurnitureAsset } from './src/services/furnitureAssets';
 import {
   TOPOLOGY_RESPONSE_SCHEMA, createTopologyPrompt, validateTopology,
@@ -454,24 +455,46 @@ app.post('/api/gemini/interior', async (req, res) => {
     }
     const selectedStyle = ['modern', 'minimal', 'traditional', 'industrial', 'scandinavian', 'japandi'].includes(style) ? style : 'modern';
     const selectedBudget = String(budget || '$10,000').slice(0, 100);
-    const type = String(roomType || 'Living Room').slice(0, 80);
+    const type = String(roomType || '').trim().slice(0, 80);
+    if (!type) return res.status(400).json({ error: 'Select a room type before generating an interior layout.' });
     const cleanedColors = (Array.isArray(preferredColors) ? preferredColors : []).filter((color: unknown) => typeof color === 'string').slice(0, 8).map((color: string) => color.slice(0, 40));
     const cleanedRequirements = String(additionalRequirements).slice(0, 1000);
-    const validOpenings: LayoutOpening[] = Array.isArray(openings) ? openings.slice(0, 30).filter((o: any) => ['north', 'south', 'east', 'west'].includes(o?.wall) && Number.isFinite(Number(o.start)) && Number.isFinite(Number(o.end)) && Number(o.end) > Number(o.start) && ['door', 'window'].includes(o.type)).map((o: any) => ({ ...o, start: Number(o.start), end: Number(o.end) })) : [];
+    const submittedOpenings: LayoutOpening[] = Array.isArray(openings) ? openings.slice(0, 30).filter((o: any) => ['north', 'south', 'east', 'west'].includes(o?.wall) && Number.isFinite(Number(o.start)) && Number.isFinite(Number(o.end)) && Number(o.end) > Number(o.start) && ['door', 'window'].includes(o.type)).map((o: any) => {
+      const span = ['north', 'south'].includes(o.wall) ? w : l;
+      return { wall: o.wall, type: o.type, start: Math.max(0, Math.min(span, Number(o.start))), end: Math.max(0, Math.min(span, Number(o.end))) } as LayoutOpening;
+    }).filter((opening) => opening.end > opening.start) : [];
+    const defaults = defaultRoomOpenings(w, l);
+    const validOpenings = [...submittedOpenings, ...defaults.filter((fallback) => !submittedOpenings.some((opening) => opening.type === fallback.type))];
 
-    const prompt = `You are an interior design curator. Suggest a practical design for a ${type} measuring ${w}m by ${l}m. Style: ${selectedStyle}. Budget: ${selectedBudget}. Preferred colors: ${cleanedColors.join(', ')}. Additional requirements: ${cleanedRequirements}.
-Return STRICT JSON only. Do not choose final coordinates or rotation; a deterministic optimizer handles placement. Give 3-8 furniture suggestions with realistic width/depth/height in meters and a preferredWall (north/south/east/west/center), plus category, material, color, notes and estimatedPrice. Include five palette colors, designPhilosophy, designSuggestions array, lightingSuggestions and materialFinishes. Use this JSON shape: {"designPhilosophy":"...","designSuggestions":["..."],"lightingSuggestions":"...","materialFinishes":"...","colorPalette":[{"hex":"#...","name":"...","role":"primary","description":"..."}],"furniture":[{"id":"f_1","name":"...","category":"seating","width":1.8,"depth":0.8,"height":0.8,"preferredWall":"north","material":"...","color":"#...","notes":"...","estimatedPrice":"..."}]}`;
+    const styleDirection: Record<string, string> = {
+      modern: 'Modern Architectural: sleek silhouettes, clean lines, restrained contrast, matte metal, refined stone and tailored upholstery.',
+      minimal: 'Pure Minimalist: few essential pieces, quiet geometric forms, neutral natural materials, concealed storage and ample open floor.',
+      traditional: 'Classic Heritage: graceful proportions, carved or panelled timber, elegant detailing, rich upholstery, brass and heirloom patterns.',
+      industrial: 'Urban Loft Atelier: exposed blackened steel, reclaimed timber, concrete or brick character, utilitarian forms and cognac leather.',
+      scandinavian: 'Nordic Scandinavian: light oak or ash, cozy tactile wool and boucle, soft warm neutrals, rounded forms and welcoming light.',
+      japandi: 'Japandi: low simple forms, natural cedar or oak, handmade textures, earthy clay tones and calm asymmetry.',
+    };
+    const prompt = `Design a practical ${type} measuring ${w}m by ${l}m. Selected design direction (must be visible in furniture names, materials, colors and lighting): ${styleDirection[selectedStyle]}. Budget tier: ${selectedBudget}; scale quality and furnishing accordingly. Preferred colors: ${cleanedColors.length ? cleanedColors.join(', ') : 'use the selected style palette'}. Additional requirements: ${cleanedRequirements || 'none'}.
+Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not invent final coordinates or rotations; the deterministic layout optimizer handles those. Provide distinct style-appropriate pieces (3-8), realistic width/depth/height in meters, category, material, color, preferredWall, notes and estimatedPrice. Color palette must follow the selected style and incorporate the preferred colors. Lighting suggestions must be specific to this style and room. Include designPhilosophy, designSuggestions, lightingSuggestions, materialFinishes, five colorPalette swatches. JSON shape: {"designPhilosophy":"...","designSuggestions":["..."],"lightingSuggestions":"...","materialFinishes":"...","colorPalette":[{"hex":"#...","name":"...","role":"primary","description":"..."}],"furniture":[{"id":"f_1","name":"...","category":"seating","width":1.8,"depth":0.8,"height":0.8,"preferredWall":"north","material":"...","color":"#...","notes":"...","estimatedPrice":"..."}]}`;
 
     const finish = (design: any) => {
       const rawSuggestions = Array.isArray(design.furniture) ? design.furniture.slice(0, 20) : [];
+      // Resolve colors from the chosen style first, then apply the user's color
+      // preferences. Gemini's palette remains a prompt input, but cannot erase
+      // the selected style when it returns a generic or stale palette.
+      const colorPalette = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).colorPalette;
       const categories = ['seating', 'table', 'storage', 'bed', 'lighting', 'decor', 'fixture', 'electronics'];
       const walls = ['north', 'south', 'east', 'west', 'center'];
-      const suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
+      let suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
         id: typeof item.id === 'string' ? item.id.slice(0, 60) : `f_${index + 1}`,
         name: typeof item.name === 'string' ? item.name.slice(0, 100) : `Furniture ${index + 1}`,
         category: categories.includes(item.category) ? item.category : 'decor',
         width: Math.min(10, Math.max(0.25, Number(item.width) || 0.8)),
         depth: Math.min(10, Math.max(0.25, Number(item.depth) || 0.8)),
+        x: typeof item.x === 'number' && Number.isFinite(item.x) ? item.x : undefined,
+        y: typeof item.y === 'number' && Number.isFinite(item.y) ? item.y : undefined,
+        rotation: [0, 90, 180, 270].includes(Number(item.rotation)) ? Number(item.rotation) : undefined,
+        clearance: typeof item.clearance === 'number' && Number.isFinite(item.clearance) ? Math.max(0, Math.min(1, item.clearance)) : undefined,
         height: Math.min(4, Math.max(0.1, Number(item.height) || 0.75)),
         preferredWall: walls.includes(item.preferredWall) ? item.preferredWall : 'center',
         material: typeof item.material === 'string' ? item.material.slice(0, 100) : undefined,
@@ -479,26 +502,135 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
         notes: typeof item.notes === 'string' ? item.notes.slice(0, 300) : undefined,
         estimatedPrice: typeof item.estimatedPrice === 'string' ? item.estimatedPrice.slice(0, 80) : undefined,
       }));
-      const colorPalette = (Array.isArray(design.colorPalette) ? design.colorPalette : []).filter((swatch: any) => swatch && typeof swatch.hex === 'string' && /^#[0-9a-f]{6}$/i.test(swatch.hex) && typeof swatch.name === 'string').slice(0, 8);
-      const furniture = optimizeFurnitureLayout(suggestions, { width: w, depth: l, openings: validOpenings }).map((item) => {
+      if (/no tv|without tv|no television/i.test(cleanedRequirements)) {
+        suggestions = suggestions.filter((suggestion) => !/tv|television|media console/i.test(suggestion.name));
+      }
+      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget);
+      const roomEssentials: Record<string, RegExp[]> = {
+        bedroom: [/bed/i, /wardrobe|closet/i],
+        kitchen: [/cabinet|counter/i, /refrigerator|fridge/i],
+        kitchenDining: [/cabinet|counter/i, /refrigerator|fridge/i, /dining table/i],
+        bath: [/vanity|basin|sink/i, /shower|bath/i, /toilet|wc/i],
+        dining: [/dining table/i, /dining chair/i],
+        living: [/sofa|couch/i, /rug/i, /coffee table/i],
+        study: [/desk/i, /task chair|office chair/i, /bookcase/i],
+      };
+      const typeKey = /bedroom|master bed|sleep/i.test(type) ? 'bedroom' : /kitchen|pantry/i.test(type) && /dining/.test(type.toLowerCase()) ? 'kitchenDining' : /kitchen|pantry/i.test(type) ? 'kitchen' : /bath|powder|washroom|toilet/i.test(type) ? 'bath' : /dining/i.test(type) ? 'dining' : /study|office|work/i.test(type) ? 'study' : 'living';
+      const essentials = (roomEssentials[typeKey] || []).flatMap((pattern) => {
+        if (suggestions.some((suggestion) => pattern.test(suggestion.name))) return [];
+        return fallbackSuggestions.filter((suggestion) => pattern.test(suggestion.name)).slice(0, 1);
+      });
+      if (typeKey === 'dining' || typeKey === 'kitchenDining') {
+        const fallbackChairs = fallbackSuggestions.filter((suggestion) => /dining chair/i.test(suggestion.name));
+        const currentChairCount = suggestions.filter((suggestion) => /chair/i.test(suggestion.name) || suggestion.category === 'seating').length;
+        essentials.push(...fallbackChairs.slice(0, Math.max(0, (typeKey === 'dining' ? 4 : 2) - currentChairCount)));
+      }
+      const requirementExtras = fallbackSuggestions.filter((fallback) =>
+        /reading nook|reading chair/i.test(cleanedRequirements) && /reading chair/i.test(fallback.name) &&
+        !suggestions.some((suggestion) => /reading chair/i.test(suggestion.name)),
+      );
+      essentials.push(...requirementExtras);
+      // Kitchen + Dining gets a measured, coherent room-specific furniture set.
+      // AI content still supplies palette/material direction, while free-form
+      // furniture lists are not allowed to split the kitchen work zone apart.
+      const completedSuggestions = typeKey === 'kitchenDining' || !suggestions.length ? fallbackSuggestions : [...suggestions, ...essentials];
+      if (completedSuggestions.length) {
+        // Keep the generated items and dimensions, but seed recognizable
+        // furniture at style-aware room anchors so optimizer ties do not erase
+        // the chosen design direction or functional zones.
+        const anchors = fallbackSuggestions;
+        const matchedAnchors = new Set<string>();
+        for (const suggestion of completedSuggestions) {
+          const name = suggestion.name.toLowerCase();
+          const pattern = /dining table/.test(name) ? /dining table/i
+            : /dining.*chair|chair.*dining/.test(name) ? /dining chair/i
+            : /sofa|couch|sectional/.test(name) ? /sofa|couch/i
+            : /coffee table/.test(name) ? /coffee table/i
+            : /bed/.test(name) ? /\bbed\b/i
+            : /wardrobe|closet/.test(name) ? /wardrobe/i
+            : /desk/.test(name) ? /desk/i
+            : /task chair|office chair/.test(name) ? /task chair/i
+            : /counter|cabinet run/.test(name) ? /counter/i
+            : /refrigerator|fridge/.test(name) ? /refrigerator/i
+            : /vanity|basin/.test(name) ? /vanity/i
+            : /shower/.test(name) ? /shower/i
+            : /toilet|\bwc\b/.test(name) ? /toilet/i
+            : null;
+          const anchor = pattern ? anchors.find((item) => pattern.test(item.name) && !matchedAnchors.has(item.id || item.name)) : undefined;
+          if (anchor) {
+            matchedAnchors.add(anchor.id || anchor.name);
+            suggestion.x = anchor.x;
+            suggestion.y = anchor.y;
+            suggestion.preferredWall = anchor.preferredWall;
+            if (anchor.rotation !== undefined) suggestion.rotation = anchor.rotation;
+            if (anchor.relativeTo) suggestion.relativeTo = anchor.relativeTo;
+            if (anchor.relativeSide) suggestion.relativeSide = anchor.relativeSide;
+          }
+        }
+      }
+      if (completedSuggestions.length) {
+        const styleNames: Record<string, string> = { modern: 'Modern Architectural', minimal: 'Pure Minimalist', traditional: 'Classic Heritage', industrial: 'Urban Loft Atelier', scandinavian: 'Nordic Scandinavian', japandi: 'Japandi' };
+        const materialByCategory: Record<string, string> = {
+          seating: ({ modern: 'tailored performance weave', minimal: 'natural undyed linen', traditional: 'tufted velvet', industrial: 'distressed cognac leather', scandinavian: 'oatmeal boucle and wool', japandi: 'natural flax and woven fiber' } as Record<string, string>)[selectedStyle],
+          table: ({ modern: 'smoked oak and honed stone', minimal: 'pale ash with a matte finish', traditional: 'hand-finished walnut', industrial: 'reclaimed timber and blackened steel', scandinavian: 'blonde white oak', japandi: 'oiled cedar and oak' } as Record<string, string>)[selectedStyle],
+          storage: ({ modern: 'flush smoked oak veneer', minimal: 'concealed pale ash joinery', traditional: 'panelled walnut millwork', industrial: 'blackened steel and reclaimed timber', scandinavian: 'light oak joinery', japandi: 'slatted cedar and oak' } as Record<string, string>)[selectedStyle],
+          bed: ({ modern: 'tailored upholstery and smoked oak', minimal: 'natural linen and pale ash', traditional: 'carved walnut and velvet', industrial: 'blackened steel and leather', scandinavian: 'blonde oak and bouclé', japandi: 'hinoki wood and natural flax' } as Record<string, string>)[selectedStyle],
+          fixture: ({ modern: 'honed grey quartz', minimal: 'warm limestone', traditional: 'classic marble', industrial: 'sealed concrete', scandinavian: 'pale terrazzo', japandi: 'hand-finished clay' } as Record<string, string>)[selectedStyle],
+          lighting: ({ modern: 'matte black architectural metal', minimal: 'concealed warm LED and opal glass', traditional: 'aged brass and shaded glass', industrial: 'blackened steel and exposed filament', scandinavian: 'paper and opal glass', japandi: 'natural fiber and warm ceramic' } as Record<string, string>)[selectedStyle],
+        };
+        const styleColors: Record<string, string> = { seating: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6', decor: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', lighting: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', table: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', storage: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', bed: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6' };
+        const grade = /75|luxury/i.test(selectedBudget) ? 'bespoke' : /35|60|high/i.test(selectedBudget) ? 'premium' : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? 'essential tier' : 'considered tier';
+        const sizeFactor = /75|luxury/i.test(selectedBudget) ? 1.07 : /35|60|high/i.test(selectedBudget) ? 1.035 : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? .97 : 1;
+        const priceFactor = grade === 'bespoke' ? 5 : grade === 'premium' ? 2.4 : grade === 'essential tier' ? .62 : 1;
+        const typicalPrice: Record<string, number> = { seating: 1100, table: 800, storage: 900, bed: 1400, fixture: 550, electronics: 1100, lighting: 350, decor: 180 };
+        for (const suggestion of completedSuggestions) {
+          if (!suggestion.name.startsWith(styleNames[selectedStyle])) suggestion.name = `${styleNames[selectedStyle]} ${suggestion.name}`;
+          suggestion.width = Math.min(w, suggestion.width * sizeFactor);
+          suggestion.depth = Math.min(l, suggestion.depth * sizeFactor);
+          const styleMaterial = materialByCategory[suggestion.category];
+          if (typeKey !== 'kitchenDining' && styleMaterial) suggestion.material = `${styleMaterial} · ${grade}${suggestion.material ? ` · ${suggestion.material}` : ''}`;
+          else if (typeKey === 'kitchenDining') suggestion.material = `${suggestion.material || 'Style-matched material'} · ${grade}`;
+          suggestion.color = styleColors[suggestion.category] || suggestion.color;
+          const middle = Math.round((typicalPrice[suggestion.category] || 500) * priceFactor / 50) * 50;
+          suggestion.estimatedPrice = `$${Math.round(middle * .7).toLocaleString()}–$${Math.round(middle * 1.35).toLocaleString()} ${grade}`;
+        }
+      }
+      if (typeKey === 'dining' || typeKey === 'kitchenDining') {
+        const table = completedSuggestions.find((item) => /dining table/i.test(item.name));
+        const chairs = completedSuggestions.filter((item) => /chair/i.test(item.name) || item.category === 'seating' && /dining/i.test(item.name));
+        const sides = ['north', 'south', 'west', 'east'] as const;
+        const facing = { north: 0, south: 180, west: 90, east: 270 } as const;
+        if (table) chairs.forEach((chair, index) => {
+          const side = sides[index % sides.length];
+          chair.relativeTo = table.id || 'dining-table';
+          chair.relativeSide = side;
+          chair.rotation = facing[side];
+          chair.clearance = Math.max(chair.clearance || 0, 0.45);
+        });
+      }
+      const optimizerRoom = { width: w, depth: l, openings: validOpenings, doorClearance: roomDoorClearance(w, l) };
+      let furniture = optimizeFurnitureLayout(completedSuggestions, optimizerRoom);
+      if (!furniture.length) furniture = optimizeFurnitureLayout(fallbackSuggestions, optimizerRoom);
+      furniture = furniture.map((item) => {
         const asset = matchFurnitureAsset(item);
         return { ...item, assetId: asset?.id, assetUrl: asset?.url };
       });
       return {
         ...design, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
-        furniture, colorPalette: colorPalette.length ? colorPalette : generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type).colorPalette,
-        layoutWarnings: furniture.length < rawSuggestions.length ? ['Some suggested pieces were omitted because they could not fit while preserving room bounds, opening clearance, and walking space.'] : [],
+        furniture, colorPalette,
+        openings: validOpenings,
+        layoutWarnings: furniture.length < completedSuggestions.length ? ['A few requested pieces could not fit safely. Adjust the room dimensions or remove a furniture requirement.'] : [],
         designSuggestions: Array.isArray(design.designSuggestions) ? design.designSuggestions.filter((suggestion: unknown) => typeof suggestion === 'string').slice(0, 10) : [],
-        lightingSuggestions: typeof design.lightingSuggestions === 'string' ? design.lightingSuggestions.slice(0, 2000) : '',
-        designPhilosophy: typeof design.designPhilosophy === 'string' ? design.designPhilosophy.slice(0, 1000) : '',
-        materialFinishes: typeof design.materialFinishes === 'string' ? design.materialFinishes.slice(0, 1000) : '',
+        lightingSuggestions: styleLighting(selectedStyle, type, selectedBudget),
+        designPhilosophy: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).designPhilosophy,
+        materialFinishes: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).materialFinishes,
         additionalRequirements: cleanedRequirements, preferredColors: cleanedColors,
       };
     };
 
     const ai = getGeminiClient();
     if (!ai) {
-      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
+      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
     }
 
     let text = '';
@@ -509,7 +641,7 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
       });
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing interior palette using architectural curation matrix.');
-      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
+      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
     }
 
     let parsed: any;
@@ -524,7 +656,7 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
       return res.json(finish(parsed));
     }
 
-    return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type)));
+    return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
   } catch (err: any) {
     console.log('[INTERIO Engine] Interior curation routed through architectural matrix.');
     return res.status(500).json({ error: err?.message || 'Could not generate a valid furniture layout for these room constraints.' });
@@ -4032,7 +4164,7 @@ Return STRICT JSON ONLY conforming to this format:
   }
 });
 
-function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string) {
+function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string, preferredColors: string[] = [], requirements = '') {
   const stylesMap: Record<string, { palette: any[]; philosophy: string; finishes: string }> = {
     modern: {
       philosophy: 'Crisp linear geometry, understated monolithic silhouettes, and balanced spatial tension allowing architectural features to breathe.',
@@ -4103,93 +4235,31 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
   };
 
   const currentTheme = stylesMap[style] || stylesMap.modern;
+  const namedColors: Record<string, string> = {
+    sage: '#879477', 'sage green': '#879477', terracotta: '#b86f52', 'warm oak': '#bd9367', oak: '#bd9367', navy: '#34445b', cream: '#efe8dc', beige: '#d8cdbb', charcoal: '#414449', olive: '#777b53', blue: '#6d8fa5', blush: '#d6a6a2', walnut: '#73533d',
+    rust: '#a64b32', 'burnt orange': '#c65d32', forest: '#355e3b', 'forest green': '#355e3b', moss: '#66734f', 'moss green': '#66734f', clay: '#ad765e', sand: '#cbb994', taupe: '#8b8178', ivory: '#f3ead7', black: '#252525', white: '#f7f7f4', grey: '#898989', gray: '#898989', teal: '#3b8585', emerald: '#168568', mustard: '#d1a52c', burgundy: '#722f3e', lavender: '#a99ac6', chocolate: '#604331', bronze: '#8a633e', copper: '#b87333', stone: '#9b978e', oatmeal: '#d8cdbb', linen: '#e8dfcf', cedar: '#a8754d', bamboo: '#c4a35a',
+  };
+  const resolvedPreferences = preferredColors.map((value) => ({ value: value.trim().toLowerCase(), hex: /^#[0-9a-f]{6}$/i.test(value) ? value : namedColors[value.trim().toLowerCase()] })).filter((item) => item.hex);
+  const budgetAccent = /75|luxury/i.test(budget) ? '#B48A4A' : /35|60|high/i.test(budget) ? '#728277' : /(^|\D)(5,000|10,000)|essential/i.test(budget) ? '#9B9A92' : null;
+  const roomFlooring: Record<string, { hex: string; name: string }> = {
+    modern: { hex: '#C9C6BF', name: 'Honed Architectural Stone' }, minimal: { hex: '#D8D2C6', name: 'Warm Limestone' },
+    traditional: { hex: '#B6A58B', name: 'Classic Marble' }, industrial: { hex: '#68645E', name: 'Sealed Concrete' },
+    scandinavian: { hex: '#DED9CC', name: 'Pale Terrazzo' }, japandi: { hex: '#A69B89', name: 'Clay Terrazzo' },
+  };
+  const themePalette = currentTheme.palette.map((swatch: any) => {
+    if (/kitchen|bath|powder/i.test(roomType) && swatch.role === 'flooring') return { ...swatch, ...roomFlooring[style] };
+    if (swatch.role === 'accent' && budgetAccent) return { ...swatch, hex: budgetAccent };
+    return swatch;
+  });
+  const palette = themePalette.map((swatch: any) => {
+    const match = resolvedPreferences.find(({ value }) => swatch.role === 'flooring' ? /oak|wood|timber|floor|bamboo|cedar|walnut/.test(value) : swatch.role === 'secondary' ? /cream|beige|linen|white|neutral|oatmeal/.test(value) : swatch.role === 'accent' ? !/oak|wood|timber|floor|bamboo|cedar|walnut|cream|beige|linen|white|neutral|oatmeal/.test(value) : false);
+    if (match) return { ...swatch, hex: match.hex };
+    const explicitHex = resolvedPreferences.filter(({ value }) => value.startsWith('#'));
+    const colorByRole = swatch.role === 'accent' ? explicitHex[0] : swatch.role === 'secondary' ? explicitHex[1] : undefined;
+    return colorByRole ? { ...swatch, hex: colorByRole.hex } : swatch;
+  });
 
-  const furniture: any[] = [
-    {
-      id: 'f_1',
-      name: 'Primary Deep-Seat Sofa',
-      category: 'seating',
-      x: Math.round((w * 0.15) * 10) / 10,
-      y: Math.round((l * 0.25) * 10) / 10,
-      width: Math.min(2.8, Math.round((w * 0.5) * 10) / 10),
-      depth: 0.95,
-      rotation: 0,
-      material: currentTheme.finishes.split(',')[3]?.trim() || 'Textured Linen',
-      color: currentTheme.palette[0].hex,
-      estimatedPrice: '$2,400 - $3,600',
-      notes: 'Anchored 0.8m away from window line for unhindered curtain drape',
-    },
-    {
-      id: 'f_2',
-      name: 'Architectural Coffee Table',
-      category: 'table',
-      x: Math.round((w * 0.22) * 10) / 10,
-      y: Math.round((l * 0.48) * 10) / 10,
-      width: Math.min(1.4, Math.round((w * 0.3) * 10) / 10),
-      depth: 0.75,
-      rotation: 0,
-      material: 'Solid Timber & Honed Quartz',
-      color: currentTheme.palette[4].hex,
-      estimatedPrice: '$850 - $1,300',
-      notes: '45cm walkway perimeter maintained all around',
-    },
-    {
-      id: 'f_3',
-      name: 'Sculptural Accent Armchair',
-      category: 'seating',
-      x: Math.round((w * 0.65) * 10) / 10,
-      y: Math.round((l * 0.28) * 10) / 10,
-      width: 0.85,
-      depth: 0.85,
-      rotation: 45,
-      material: 'Curved Molded Oak & Wool',
-      color: currentTheme.palette[2].hex,
-      estimatedPrice: '$950 - $1,400',
-      notes: 'Angled at 45 degrees toward conversational focal point',
-    },
-    {
-      id: 'f_4',
-      name: 'Low-Profile Media Console',
-      category: 'storage',
-      x: Math.round((w * 0.15) * 10) / 10,
-      y: Math.round((l * 0.82) * 10) / 10,
-      width: Math.min(2.6, Math.round((w * 0.55) * 10) / 10),
-      depth: 0.45,
-      rotation: 0,
-      material: 'Fluted Veneer & Black Steel',
-      color: currentTheme.palette[1].hex,
-      estimatedPrice: '$1,200 - $1,800',
-      notes: 'Concealed acoustic fabric baffles for invisible sound equipment',
-    },
-    {
-      id: 'f_5',
-      name: 'Architectural Floor Luminaire',
-      category: 'lighting',
-      x: Math.round((w * 0.82) * 10) / 10,
-      y: Math.round((l * 0.18) * 10) / 10,
-      width: 0.5,
-      depth: 0.5,
-      rotation: 0,
-      material: 'Patinated Brass & Frosted Opal Glass',
-      color: currentTheme.palette[3].hex,
-      estimatedPrice: '$450 - $700',
-      notes: '90+ CRI 2700K warm dimming diode system',
-    },
-    {
-      id: 'f_6',
-      name: 'Hand-Knotted Area Rug',
-      category: 'decor',
-      x: Math.round((w * 0.1) * 10) / 10,
-      y: Math.round((l * 0.2) * 10) / 10,
-      width: Math.round((w * 0.75) * 10) / 10,
-      depth: Math.round((l * 0.55) * 10) / 10,
-      rotation: 0,
-      material: 'New Zealand Wool & Silk Blend',
-      color: currentTheme.palette[3].hex,
-      estimatedPrice: '$1,100 - $1,900',
-      notes: 'Generous sizing ensures all front sofa/chair legs rest firmly on pile',
-    },
-  ];
+  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget);
 
   return {
     roomWidth: w,
@@ -4198,11 +4268,38 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
     style,
     budget,
     designPhilosophy: currentTheme.philosophy,
-    materialFinishes: currentTheme.finishes,
-    lightingSuggestions: `Integrate a three-tier circadian lighting scheme: 1) Ambient illumination via indirect 2700K LED cove grazing across ceiling planes; 2) Focal statement luminaire placed at golden-ratio centroid; 3) Low-glare directional task downlights highlighting architectural artwork. Ensure all circuits support 0-10V flicker-free dimming.`,
-    colorPalette: currentTheme.palette,
+    materialFinishes: `${currentTheme.finishes} ${budgetFinish(budget)}`,
+    lightingSuggestions: styleLighting(style, roomType, budget),
+    colorPalette: palette,
     furniture,
+    preferredColors,
+    additionalRequirements: requirements,
   };
+}
+
+function budgetFinish(budget: string) {
+  if (/75|luxury/i.test(budget)) return 'Specify bespoke joinery, artisan finishes and premium hardware.';
+  if (/35|60|high/i.test(budget)) return 'Use premium durable finishes and custom detailing at focal pieces.';
+  if (/(^|\D)(5,000|10,000)|essential/i.test(budget)) return 'Prioritize durable, attainable finishes and versatile essential pieces.';
+  return 'Balance lasting materials with carefully selected focal details.';
+}
+
+function styleLighting(style: string, roomType: string, budget: string) {
+  const roomTask = /kitchen/i.test(roomType) && /dining/i.test(roomType) ? 'continuous under-cabinet task light for the kitchen and a warm dimmable pendant centered over the dining table'
+    : /kitchen/i.test(roomType) ? 'continuous under-cabinet task light and bright, even worktop illumination'
+    : /study|office/i.test(roomType) ? 'glare-controlled desk task light and an even ambient layer'
+    : /dining/i.test(roomType) ? 'a warm dimmable pendant centered over the dining table and soft ambient fill'
+    : /bedroom/i.test(roomType) ? 'warm bedside reading lights with low-glare indirect ambient light'
+    : 'layered ambient light with focused task and reading light';
+  const styleLayer = ({
+    modern: 'Use clean recessed lines, concealed sources and restrained architectural accents.',
+    minimal: 'Keep fittings discreet, use concealed linear light and avoid visual clutter.',
+    traditional: 'Use warm brass or bronze fittings, shaded lamps and a graceful central fixture.',
+    industrial: 'Use blackened metal pendants, exposed fittings and directional task lamps.',
+    scandinavian: 'Use soft 2700K light, paper or opal diffusers and cozy pools of illumination.',
+    japandi: 'Use warm low-level light, natural shade materials and quiet wall grazing.',
+  } as Record<string, string>)[style] || 'Use warm, layered architectural lighting.';
+  return `${roomTask}. ${styleLayer} ${budgetFinish(budget)}`;
 }
 
 // ----------------------------------------------------
