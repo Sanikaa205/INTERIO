@@ -466,12 +466,23 @@ app.post('/api/gemini/interior', async (req, res) => {
     const defaults = defaultRoomOpenings(w, l);
     const validOpenings = [...submittedOpenings, ...defaults.filter((fallback) => !submittedOpenings.some((opening) => opening.type === fallback.type))];
 
-    const prompt = `You are an interior design curator. Suggest a practical design for a ${type} measuring ${w}m by ${l}m. Style: ${selectedStyle}. Budget: ${selectedBudget}. Preferred colors: ${cleanedColors.join(', ')}. Additional requirements: ${cleanedRequirements}.
-Return STRICT JSON only. Do not choose final coordinates or rotation; a deterministic optimizer handles placement. Give 3-8 furniture suggestions with realistic width/depth/height in meters and a preferredWall (north/south/east/west/center), plus category, material, color, notes and estimatedPrice. Include five palette colors, designPhilosophy, designSuggestions array, lightingSuggestions and materialFinishes. Use this JSON shape: {"designPhilosophy":"...","designSuggestions":["..."],"lightingSuggestions":"...","materialFinishes":"...","colorPalette":[{"hex":"#...","name":"...","role":"primary","description":"..."}],"furniture":[{"id":"f_1","name":"...","category":"seating","width":1.8,"depth":0.8,"height":0.8,"preferredWall":"north","material":"...","color":"#...","notes":"...","estimatedPrice":"..."}]}`;
+    const styleDirection: Record<string, string> = {
+      modern: 'Modern Architectural: sleek silhouettes, clean lines, restrained contrast, matte metal, refined stone and tailored upholstery.',
+      minimal: 'Pure Minimalist: few essential pieces, quiet geometric forms, neutral natural materials, concealed storage and ample open floor.',
+      traditional: 'Classic Heritage: graceful proportions, carved or panelled timber, elegant detailing, rich upholstery, brass and heirloom patterns.',
+      industrial: 'Urban Loft Atelier: exposed blackened steel, reclaimed timber, concrete or brick character, utilitarian forms and cognac leather.',
+      scandinavian: 'Nordic Scandinavian: light oak or ash, cozy tactile wool and boucle, soft warm neutrals, rounded forms and welcoming light.',
+      japandi: 'Japandi: low simple forms, natural cedar or oak, handmade textures, earthy clay tones and calm asymmetry.',
+    };
+    const prompt = `Design a practical ${type} measuring ${w}m by ${l}m. Selected design direction (must be visible in furniture names, materials, colors and lighting): ${styleDirection[selectedStyle]}. Budget tier: ${selectedBudget}; scale quality and furnishing accordingly. Preferred colors: ${cleanedColors.length ? cleanedColors.join(', ') : 'use the selected style palette'}. Additional requirements: ${cleanedRequirements || 'none'}.
+Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not invent final coordinates or rotations; the deterministic layout optimizer handles those. Provide distinct style-appropriate pieces (3-8), realistic width/depth/height in meters, category, material, color, preferredWall, notes and estimatedPrice. Color palette must follow the selected style and incorporate the preferred colors. Lighting suggestions must be specific to this style and room. Include designPhilosophy, designSuggestions, lightingSuggestions, materialFinishes, five colorPalette swatches. JSON shape: {"designPhilosophy":"...","designSuggestions":["..."],"lightingSuggestions":"...","materialFinishes":"...","colorPalette":[{"hex":"#...","name":"...","role":"primary","description":"..."}],"furniture":[{"id":"f_1","name":"...","category":"seating","width":1.8,"depth":0.8,"height":0.8,"preferredWall":"north","material":"...","color":"#...","notes":"...","estimatedPrice":"..."}]}`;
 
     const finish = (design: any) => {
       const rawSuggestions = Array.isArray(design.furniture) ? design.furniture.slice(0, 20) : [];
-      const colorPalette = (Array.isArray(design.colorPalette) ? design.colorPalette : []).filter((swatch: any) => swatch && typeof swatch.hex === 'string' && /^#[0-9a-f]{6}$/i.test(swatch.hex) && typeof swatch.name === 'string').slice(0, 8);
+      // Resolve colors from the chosen style first, then apply the user's color
+      // preferences. Gemini's palette remains a prompt input, but cannot erase
+      // the selected style when it returns a generic or stale palette.
+      const colorPalette = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).colorPalette;
       const categories = ['seating', 'table', 'storage', 'bed', 'lighting', 'decor', 'fixture', 'electronics'];
       const walls = ['north', 'south', 'east', 'west', 'center'];
       let suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
@@ -494,7 +505,7 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
       if (/no tv|without tv|no television/i.test(cleanedRequirements)) {
         suggestions = suggestions.filter((suggestion) => !/tv|television|media console/i.test(suggestion.name));
       }
-      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements);
+      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget);
       const roomEssentials: Record<string, RegExp[]> = {
         bedroom: [/bed/i, /wardrobe|closet/i],
         kitchen: [/cabinet|counter/i, /refrigerator|fridge/i],
@@ -519,7 +530,84 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
         !suggestions.some((suggestion) => /reading chair/i.test(suggestion.name)),
       );
       essentials.push(...requirementExtras);
-      const completedSuggestions = suggestions.length ? [...suggestions, ...essentials] : fallbackSuggestions;
+      // Kitchen + Dining gets a measured, coherent room-specific furniture set.
+      // AI content still supplies palette/material direction, while free-form
+      // furniture lists are not allowed to split the kitchen work zone apart.
+      const completedSuggestions = typeKey === 'kitchenDining' || !suggestions.length ? fallbackSuggestions : [...suggestions, ...essentials];
+      if (completedSuggestions.length) {
+        // Keep the generated items and dimensions, but seed recognizable
+        // furniture at style-aware room anchors so optimizer ties do not erase
+        // the chosen design direction or functional zones.
+        const anchors = fallbackSuggestions;
+        const matchedAnchors = new Set<string>();
+        for (const suggestion of completedSuggestions) {
+          const name = suggestion.name.toLowerCase();
+          const pattern = /dining table/.test(name) ? /dining table/i
+            : /dining.*chair|chair.*dining/.test(name) ? /dining chair/i
+            : /sofa|couch|sectional/.test(name) ? /sofa|couch/i
+            : /coffee table/.test(name) ? /coffee table/i
+            : /bed/.test(name) ? /\bbed\b/i
+            : /wardrobe|closet/.test(name) ? /wardrobe/i
+            : /desk/.test(name) ? /desk/i
+            : /task chair|office chair/.test(name) ? /task chair/i
+            : /counter|cabinet run/.test(name) ? /counter/i
+            : /refrigerator|fridge/.test(name) ? /refrigerator/i
+            : /vanity|basin/.test(name) ? /vanity/i
+            : /shower/.test(name) ? /shower/i
+            : /toilet|\bwc\b/.test(name) ? /toilet/i
+            : null;
+          const anchor = pattern ? anchors.find((item) => pattern.test(item.name) && !matchedAnchors.has(item.id || item.name)) : undefined;
+          if (anchor) {
+            matchedAnchors.add(anchor.id || anchor.name);
+            suggestion.x = anchor.x;
+            suggestion.y = anchor.y;
+            suggestion.preferredWall = anchor.preferredWall;
+            if (anchor.rotation !== undefined) suggestion.rotation = anchor.rotation;
+            if (anchor.relativeTo) suggestion.relativeTo = anchor.relativeTo;
+            if (anchor.relativeSide) suggestion.relativeSide = anchor.relativeSide;
+          }
+        }
+      }
+      if (completedSuggestions.length) {
+        const styleNames: Record<string, string> = { modern: 'Modern Architectural', minimal: 'Pure Minimalist', traditional: 'Classic Heritage', industrial: 'Urban Loft Atelier', scandinavian: 'Nordic Scandinavian', japandi: 'Japandi' };
+        const materialByCategory: Record<string, string> = {
+          seating: ({ modern: 'tailored performance weave', minimal: 'natural undyed linen', traditional: 'tufted velvet', industrial: 'distressed cognac leather', scandinavian: 'oatmeal boucle and wool', japandi: 'natural flax and woven fiber' } as Record<string, string>)[selectedStyle],
+          table: ({ modern: 'smoked oak and honed stone', minimal: 'pale ash with a matte finish', traditional: 'hand-finished walnut', industrial: 'reclaimed timber and blackened steel', scandinavian: 'blonde white oak', japandi: 'oiled cedar and oak' } as Record<string, string>)[selectedStyle],
+          storage: ({ modern: 'flush smoked oak veneer', minimal: 'concealed pale ash joinery', traditional: 'panelled walnut millwork', industrial: 'blackened steel and reclaimed timber', scandinavian: 'light oak joinery', japandi: 'slatted cedar and oak' } as Record<string, string>)[selectedStyle],
+          bed: ({ modern: 'tailored upholstery and smoked oak', minimal: 'natural linen and pale ash', traditional: 'carved walnut and velvet', industrial: 'blackened steel and leather', scandinavian: 'blonde oak and bouclé', japandi: 'hinoki wood and natural flax' } as Record<string, string>)[selectedStyle],
+          fixture: ({ modern: 'honed grey quartz', minimal: 'warm limestone', traditional: 'classic marble', industrial: 'sealed concrete', scandinavian: 'pale terrazzo', japandi: 'hand-finished clay' } as Record<string, string>)[selectedStyle],
+          lighting: ({ modern: 'matte black architectural metal', minimal: 'concealed warm LED and opal glass', traditional: 'aged brass and shaded glass', industrial: 'blackened steel and exposed filament', scandinavian: 'paper and opal glass', japandi: 'natural fiber and warm ceramic' } as Record<string, string>)[selectedStyle],
+        };
+        const styleColors: Record<string, string> = { seating: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6', decor: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', lighting: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', table: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', storage: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', bed: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6' };
+        const grade = /75|luxury/i.test(selectedBudget) ? 'bespoke' : /35|60|high/i.test(selectedBudget) ? 'premium' : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? 'essential tier' : 'considered tier';
+        const sizeFactor = /75|luxury/i.test(selectedBudget) ? 1.07 : /35|60|high/i.test(selectedBudget) ? 1.035 : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? .97 : 1;
+        const priceFactor = grade === 'bespoke' ? 5 : grade === 'premium' ? 2.4 : grade === 'essential tier' ? .62 : 1;
+        const typicalPrice: Record<string, number> = { seating: 1100, table: 800, storage: 900, bed: 1400, fixture: 550, electronics: 1100, lighting: 350, decor: 180 };
+        for (const suggestion of completedSuggestions) {
+          if (!suggestion.name.startsWith(styleNames[selectedStyle])) suggestion.name = `${styleNames[selectedStyle]} ${suggestion.name}`;
+          suggestion.width = Math.min(w, suggestion.width * sizeFactor);
+          suggestion.depth = Math.min(l, suggestion.depth * sizeFactor);
+          const styleMaterial = materialByCategory[suggestion.category];
+          if (typeKey !== 'kitchenDining' && styleMaterial) suggestion.material = `${styleMaterial} · ${grade}${suggestion.material ? ` · ${suggestion.material}` : ''}`;
+          else if (typeKey === 'kitchenDining') suggestion.material = `${suggestion.material || 'Style-matched material'} · ${grade}`;
+          suggestion.color = styleColors[suggestion.category] || suggestion.color;
+          const middle = Math.round((typicalPrice[suggestion.category] || 500) * priceFactor / 50) * 50;
+          suggestion.estimatedPrice = `$${Math.round(middle * .7).toLocaleString()}–$${Math.round(middle * 1.35).toLocaleString()} ${grade}`;
+        }
+      }
+      if (typeKey === 'dining' || typeKey === 'kitchenDining') {
+        const table = completedSuggestions.find((item) => /dining table/i.test(item.name));
+        const chairs = completedSuggestions.filter((item) => /chair/i.test(item.name) || item.category === 'seating' && /dining/i.test(item.name));
+        const sides = ['north', 'south', 'west', 'east'] as const;
+        const facing = { north: 0, south: 180, west: 90, east: 270 } as const;
+        if (table) chairs.forEach((chair, index) => {
+          const side = sides[index % sides.length];
+          chair.relativeTo = table.id || 'dining-table';
+          chair.relativeSide = side;
+          chair.rotation = facing[side];
+          chair.clearance = Math.max(chair.clearance || 0, 0.45);
+        });
+      }
       const optimizerRoom = { width: w, depth: l, openings: validOpenings, doorClearance: roomDoorClearance(w, l) };
       let furniture = optimizeFurnitureLayout(completedSuggestions, optimizerRoom);
       if (!furniture.length) furniture = optimizeFurnitureLayout(fallbackSuggestions, optimizerRoom);
@@ -529,13 +617,13 @@ Return STRICT JSON only. Do not choose final coordinates or rotation; a determin
       });
       return {
         ...design, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
-        furniture, colorPalette: colorPalette.length ? colorPalette : generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).colorPalette,
+        furniture, colorPalette,
         openings: validOpenings,
         layoutWarnings: furniture.length < completedSuggestions.length ? ['A few requested pieces could not fit safely. Adjust the room dimensions or remove a furniture requirement.'] : [],
         designSuggestions: Array.isArray(design.designSuggestions) ? design.designSuggestions.filter((suggestion: unknown) => typeof suggestion === 'string').slice(0, 10) : [],
-        lightingSuggestions: typeof design.lightingSuggestions === 'string' ? design.lightingSuggestions.slice(0, 2000) : '',
-        designPhilosophy: typeof design.designPhilosophy === 'string' ? design.designPhilosophy.slice(0, 1000) : '',
-        materialFinishes: typeof design.materialFinishes === 'string' ? design.materialFinishes.slice(0, 1000) : '',
+        lightingSuggestions: styleLighting(selectedStyle, type, selectedBudget),
+        designPhilosophy: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).designPhilosophy,
+        materialFinishes: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).materialFinishes,
         additionalRequirements: cleanedRequirements, preferredColors: cleanedColors,
       };
     };
@@ -4149,14 +4237,29 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
   const currentTheme = stylesMap[style] || stylesMap.modern;
   const namedColors: Record<string, string> = {
     sage: '#879477', 'sage green': '#879477', terracotta: '#b86f52', 'warm oak': '#bd9367', oak: '#bd9367', navy: '#34445b', cream: '#efe8dc', beige: '#d8cdbb', charcoal: '#414449', olive: '#777b53', blue: '#6d8fa5', blush: '#d6a6a2', walnut: '#73533d',
+    rust: '#a64b32', 'burnt orange': '#c65d32', forest: '#355e3b', 'forest green': '#355e3b', moss: '#66734f', 'moss green': '#66734f', clay: '#ad765e', sand: '#cbb994', taupe: '#8b8178', ivory: '#f3ead7', black: '#252525', white: '#f7f7f4', grey: '#898989', gray: '#898989', teal: '#3b8585', emerald: '#168568', mustard: '#d1a52c', burgundy: '#722f3e', lavender: '#a99ac6', chocolate: '#604331', bronze: '#8a633e', copper: '#b87333', stone: '#9b978e', oatmeal: '#d8cdbb', linen: '#e8dfcf', cedar: '#a8754d', bamboo: '#c4a35a',
   };
   const resolvedPreferences = preferredColors.map((value) => ({ value: value.trim().toLowerCase(), hex: /^#[0-9a-f]{6}$/i.test(value) ? value : namedColors[value.trim().toLowerCase()] })).filter((item) => item.hex);
-  const palette = currentTheme.palette.map((swatch: any) => {
+  const budgetAccent = /75|luxury/i.test(budget) ? '#B48A4A' : /35|60|high/i.test(budget) ? '#728277' : /(^|\D)(5,000|10,000)|essential/i.test(budget) ? '#9B9A92' : null;
+  const roomFlooring: Record<string, { hex: string; name: string }> = {
+    modern: { hex: '#C9C6BF', name: 'Honed Architectural Stone' }, minimal: { hex: '#D8D2C6', name: 'Warm Limestone' },
+    traditional: { hex: '#B6A58B', name: 'Classic Marble' }, industrial: { hex: '#68645E', name: 'Sealed Concrete' },
+    scandinavian: { hex: '#DED9CC', name: 'Pale Terrazzo' }, japandi: { hex: '#A69B89', name: 'Clay Terrazzo' },
+  };
+  const themePalette = currentTheme.palette.map((swatch: any) => {
+    if (/kitchen|bath|powder/i.test(roomType) && swatch.role === 'flooring') return { ...swatch, ...roomFlooring[style] };
+    if (swatch.role === 'accent' && budgetAccent) return { ...swatch, hex: budgetAccent };
+    return swatch;
+  });
+  const palette = themePalette.map((swatch: any) => {
     const match = resolvedPreferences.find(({ value }) => swatch.role === 'flooring' ? /oak|wood|timber|floor|bamboo|cedar|walnut/.test(value) : swatch.role === 'secondary' ? /cream|beige|linen|white|neutral|oatmeal/.test(value) : swatch.role === 'accent' ? !/oak|wood|timber|floor|bamboo|cedar|walnut|cream|beige|linen|white|neutral|oatmeal/.test(value) : false);
-    return match ? { ...swatch, hex: match.hex } : swatch;
+    if (match) return { ...swatch, hex: match.hex };
+    const explicitHex = resolvedPreferences.filter(({ value }) => value.startsWith('#'));
+    const colorByRole = swatch.role === 'accent' ? explicitHex[0] : swatch.role === 'secondary' ? explicitHex[1] : undefined;
+    return colorByRole ? { ...swatch, hex: colorByRole.hex } : swatch;
   });
 
-  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements);
+  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget);
 
   return {
     roomWidth: w,
@@ -4165,13 +4268,38 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
     style,
     budget,
     designPhilosophy: currentTheme.philosophy,
-    materialFinishes: currentTheme.finishes,
-    lightingSuggestions: `Integrate a three-tier circadian lighting scheme: 1) Ambient illumination via indirect 2700K LED cove grazing across ceiling planes; 2) Focal statement luminaire placed at golden-ratio centroid; 3) Low-glare directional task downlights highlighting architectural artwork. Ensure all circuits support 0-10V flicker-free dimming.`,
+    materialFinishes: `${currentTheme.finishes} ${budgetFinish(budget)}`,
+    lightingSuggestions: styleLighting(style, roomType, budget),
     colorPalette: palette,
     furniture,
     preferredColors,
     additionalRequirements: requirements,
   };
+}
+
+function budgetFinish(budget: string) {
+  if (/75|luxury/i.test(budget)) return 'Specify bespoke joinery, artisan finishes and premium hardware.';
+  if (/35|60|high/i.test(budget)) return 'Use premium durable finishes and custom detailing at focal pieces.';
+  if (/(^|\D)(5,000|10,000)|essential/i.test(budget)) return 'Prioritize durable, attainable finishes and versatile essential pieces.';
+  return 'Balance lasting materials with carefully selected focal details.';
+}
+
+function styleLighting(style: string, roomType: string, budget: string) {
+  const roomTask = /kitchen/i.test(roomType) && /dining/i.test(roomType) ? 'continuous under-cabinet task light for the kitchen and a warm dimmable pendant centered over the dining table'
+    : /kitchen/i.test(roomType) ? 'continuous under-cabinet task light and bright, even worktop illumination'
+    : /study|office/i.test(roomType) ? 'glare-controlled desk task light and an even ambient layer'
+    : /dining/i.test(roomType) ? 'a warm dimmable pendant centered over the dining table and soft ambient fill'
+    : /bedroom/i.test(roomType) ? 'warm bedside reading lights with low-glare indirect ambient light'
+    : 'layered ambient light with focused task and reading light';
+  const styleLayer = ({
+    modern: 'Use clean recessed lines, concealed sources and restrained architectural accents.',
+    minimal: 'Keep fittings discreet, use concealed linear light and avoid visual clutter.',
+    traditional: 'Use warm brass or bronze fittings, shaded lamps and a graceful central fixture.',
+    industrial: 'Use blackened metal pendants, exposed fittings and directional task lamps.',
+    scandinavian: 'Use soft 2700K light, paper or opal diffusers and cozy pools of illumination.',
+    japandi: 'Use warm low-level light, natural shade materials and quiet wall grazing.',
+  } as Record<string, string>)[style] || 'Use warm, layered architectural lighting.';
+  return `${roomTask}. ${styleLayer} ${budgetFinish(budget)}`;
 }
 
 // ----------------------------------------------------

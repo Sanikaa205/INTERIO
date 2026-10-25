@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { DesignStyle, InteriorDesignResult } from '../types';
 import { generateInteriorApi } from '../services/api';
-import { defaultRoomOpenings } from '../services/layoutOptimizer';
+import { defaultRoomOpenings, furnitureFootprint } from '../services/layoutOptimizer';
 
 interface InteriorDesignWorkflowProps {
   onView3D: (result: InteriorDesignResult) => void;
@@ -299,15 +299,18 @@ export const InteriorFloorPlan: React.FC<{
 
       {[...result.furniture].sort((a, b) => Number(!/rug/i.test(`${a.name} ${a.form || ''}`)) - Number(!/rug/i.test(`${b.name} ${b.form || ''}`))).map((item) => {
         const isSelected = selectedFurnitureId === item.id;
-        const showLabel = /coffee table|dining table|desk|console|media|tv unit|rug|wardrobe|counter|sideboard|cabinet/i.test(item.name);
-        const width = Math.max(0.08, Math.min(item.width, w - item.x));
-        const depth = Math.max(0.08, Math.min(item.depth, l - item.y));
-        const cx = item.x + width / 2;
-        const cy = item.y + depth / 2;
+        const showLabel = !/kitchen|dining/i.test(result.roomType) && /coffee table|dining table|desk|console|media|tv unit|rug|wardrobe|counter|sideboard|cabinet/i.test(item.name);
+        // Keep the local shape size intact; the shared footprint helper below
+        // supplies the rotated world-space bounds used by both plan views.
+        const width = Math.max(0.08, item.width);
+        const depth = Math.max(0.08, item.depth);
         const rotation = item.rotation || 0;
+        const bounds = furnitureFootprint(item);
+        const cx = bounds.x + bounds.width / 2;
+        const cy = bounds.y + bounds.depth / 2;
         return <g key={item.id} onClick={() => onSelectFurniture(item.id)} className="cursor-pointer" filter="url(#furniture-shadow)" transform={rotation ? `rotate(${rotation} ${cx} ${cy})` : undefined}>
-          <g transform={`translate(${item.x} ${item.y})`}>{furnitureShape(`${item.form || ''} ${item.name} ${item.category || ''}`, width, depth, item.color || '#d6d3d1')}</g>
-          {isSelected && <rect x={item.x - .045} y={item.y - .045} width={width + .09} height={depth + .09} rx=".1" fill="none" stroke="#0f172a" strokeWidth=".045" strokeDasharray=".12 .07" pointerEvents="none" />}
+          <g transform={`translate(${cx - width / 2} ${cy - depth / 2})`} aria-label={item.name}>{furnitureShape(`${item.form || ''} ${item.name} ${item.category || ''}`, width, depth, item.color || '#d6d3d1')}</g>
+          {isSelected && <rect x={cx - width / 2 - .045} y={cy - depth / 2 - .045} width={width + .09} height={depth + .09} rx=".1" fill="none" stroke="#0f172a" strokeWidth=".045" strokeDasharray=".12 .07" pointerEvents="none" />}
           {showLabel && <text x={cx} y={cy + 0.035} textAnchor="middle" dominantBaseline="middle" fontSize={Math.min(0.13, Math.max(0.085, width / 12))} fontWeight="600" fill="#292524" stroke="#f7f2e9" strokeWidth=".025" paintOrder="stroke" pointerEvents="none">{item.name}</text>}
         </g>;
       })}

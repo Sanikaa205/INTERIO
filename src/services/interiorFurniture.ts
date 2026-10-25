@@ -9,6 +9,7 @@ export function createRoomFurnitureSuggestions(
   style: DesignStyle,
   palette: ColorSwatch[],
   requirements = '',
+  budget = '',
 ): FurnitureSuggestion[] {
   const kind = roomType.toLowerCase();
   const pref = requirements.toLowerCase();
@@ -27,6 +28,17 @@ export function createRoomFurnitureSuggestions(
     japandi: { upholstery: 'Textured natural flax', wood: 'Oiled cedar and oak', stone: 'Hand-finished clay' },
   };
   const finish = styles[style] || styles.modern;
+  const styleLanguage: Record<DesignStyle, { bed: string; sofa: string; chair: string; table: string; placement: number }> = {
+    modern: { bed: 'Sleek Platform Bed', sofa: 'Tailored Low-Profile Sofa', chair: 'Architectural Upholstered Dining Chair', table: 'Clean-Lined Oak Dining Table', placement: 0.02 },
+    minimal: { bed: 'Quiet Platform Bed', sofa: 'Essential Modular Sofa', chair: 'Minimal Linen Dining Chair', table: 'Unadorned Solid Dining Table', placement: -0.12 },
+    traditional: { bed: 'Panelled Heritage Bed', sofa: 'Tufted Heritage Sofa', chair: 'Classic Upholstered Dining Chair', table: 'Hand-Finished Heritage Dining Table', placement: 0.12 },
+    industrial: { bed: 'Blackened Steel Frame Bed', sofa: 'Cognac Leather Loft Sofa', chair: 'Leather and Steel Dining Chair', table: 'Reclaimed Timber Trestle Dining Table', placement: 0.08 },
+    scandinavian: { bed: 'Blonde Oak Slat Bed', sofa: 'Soft Bouclé Nordic Sofa', chair: 'Oatmeal Bouclé Dining Chair', table: 'Light Oak Nordic Dining Table', placement: 0.04 },
+    japandi: { bed: 'Low Hinoki Platform Bed', sofa: 'Natural Flax Low Sofa', chair: 'Woven Cedar Dining Chair', table: 'Wabi-Sabi Timber Dining Table', placement: -0.04 },
+  };
+  const language = styleLanguage[style] || styleLanguage.modern;
+  const budgetTier = /75|luxury/i.test(budget) ? 'bespoke' : /35|60|high/i.test(budget) ? 'premium' : /(^|\D)(5,000|10,000)|essential/i.test(budget) ? 'essential' : 'considered';
+  const styleScale = style === 'traditional' ? 1.04 : style === 'minimal' || style === 'japandi' ? .96 : 1;
   const color = (role: ColorSwatch['role'], fallback: string) => palette.find((item) => item.role === role)?.hex || fallback;
   const fabric = color('secondary', '#d8d1c6');
   const timber = color('flooring', '#b99b78');
@@ -35,8 +47,8 @@ export function createRoomFurnitureSuggestions(
   const fitW = (fraction: number, preferred: number, min = 0.45) => Math.max(Math.min(min, width), Math.min(width * fraction, preferred));
   const fitD = (fraction: number, preferred: number, min = 0.4) => Math.max(Math.min(min, depth), Math.min(depth * fraction, preferred));
   const item = (id: string, name: string, category: FurnitureSuggestion['category'], x: number, y: number, itemW: number, itemD: number, preferredWall: FurnitureSuggestion['preferredWall'], material: string, itemColor: string, clearance = 0.45): FurnitureSuggestion => ({
-    id, name, category, x: Math.max(0, Math.min(width - itemW, x)), y: Math.max(0, Math.min(depth - itemD, y)),
-    width: itemW, depth: itemD, preferredWall, material, color: itemColor, clearance,
+    id, name, category, x: Math.max(0, Math.min(width - itemW * styleScale, x)), y: Math.max(0, Math.min(depth - itemD * styleScale, y)),
+    width: itemW * styleScale, depth: itemD * styleScale, preferredWall, material: `${material} · ${budgetTier} finish`, color: itemColor, clearance,
   });
 
   let pieces: FurnitureSuggestion[];
@@ -44,27 +56,35 @@ export function createRoomFurnitureSuggestions(
     const bedW = fitW(.58, 1.8, 1.35), bedD = fitD(.43, 2.05, 1.8);
     const bedX = (width - bedW) / 2;
     pieces = [
-      item('bed', /master/i.test(kind) ? 'Upholstered King Bed' : 'Upholstered Bed', 'bed', bedX, .28, bedW, bedD, 'north', finish.upholstery, fabric, .08),
-      item('wardrobe', 'Full-Height Wardrobe', 'storage', (width - fitW(.42, 1.65, 1.0)) / 2, depth - .72, fitW(.42, 1.65, 1.0), .62, 'south', finish.wood, timber, .12),
+      item('bed', `${language.bed}${/master/i.test(kind) ? ' Suite' : ''}`, 'bed', bedX, .28, bedW, bedD, 'north', finish.upholstery, fabric, .08),
+      item('wardrobe', style === 'traditional' ? 'Walnut Panel Wardrobe' : style === 'industrial' ? 'Steel-Framed Storage Wardrobe' : style === 'japandi' ? 'Slatted Cedar Wardrobe' : 'Full-Height Wardrobe', 'storage', (width - fitW(.42, 1.65, 1.0)) / 2, depth - .72, fitW(.42, 1.65, 1.0), .62, 'south', finish.wood, timber, .12),
       item('nightstand-left', 'Bedside Table', 'table', Math.max(.06, bedX - .48), .44, .4, .4, 'west', finish.wood, timber, .08),
       item('nightstand-right', 'Bedside Table', 'table', Math.min(width - .46, bedX + bedW + .08), .44, .4, .4, 'east', finish.wood, timber, .08),
       item('bedroom-rug', 'Woven Area Rug', 'decor', (width - fitW(.76, 3.1, 1.5)) / 2, Math.min(depth - 1.8, Math.max(.8, bedD * .72)), fitW(.76, 3.1, 1.5), fitD(.45, 2.4, 1.4), 'center', finish.upholstery, fabric, 0),
     ];
   } else if (kitchen) {
-    const runW = fitW(.86, 3.5, 1.7);
+    // Reserve a connected bay for the fridge so the optimizer can keep the
+    // appliance beside the worktop instead of marooning it at a room corner.
+    const runW = Math.min(fitW(.78, 3.5, 1.7), Math.max(1.25, width - .84));
+    const combined = /dining/.test(kind);
+    const tableW = fitW(.38, 1.5, .9), tableD = .82, tableX = (width - tableW) / 2;
+    // Keep the south chair clear of the typical entry swing, while leaving
+    // enough depth between the back counter zone and the dining setting.
+    const diningY = Math.max(1.55, depth * .42);
+    const kitchenX = Math.max(0, (width - runW - .84) / 2);
     pieces = [
-      item('kitchen-run', 'Kitchen Cabinets & Counter', 'storage', (width - runW) / 2, .14, runW, .66, 'north', `${finish.wood}, ${finish.stone}`, color('secondary', '#d7d0c4'), .12),
-      item('refrigerator', 'Tall Refrigerator', 'electronics', .16, depth - .82, .72, .72, 'west', 'Brushed stainless steel', '#d7dbd9', .22),
-      item('kitchen-island', 'Kitchen Island', 'table', (width - fitW(.4, 1.45, .85)) / 2, Math.max(.95, depth * .43), fitW(.4, 1.45, .85), .72, 'center', finish.wood, timber, .3),
+      { ...item('kitchen-run', `${style === 'industrial' ? 'Blackened Steel and Reclaimed Timber' : style === 'traditional' ? 'Inset Heritage Walnut' : style === 'japandi' ? 'Slatted Cedar' : style === 'minimal' ? 'Handleless Minimal' : 'Sleek Modern'} Kitchen Cabinets & Counter`, 'storage', kitchenX, .22, runW, .66, 'north', `${finish.wood}, ${finish.stone}`, color('secondary', '#d7d0c4'), .12), rotation: 0 },
+      { ...item('refrigerator', 'Tall Refrigerator', 'electronics', kitchenX + runW + .12, .22, .72, .72, 'north', 'Brushed stainless steel', '#d7dbd9', .12), rotation: 0, relativeTo: 'kitchen-run', relativeSide: 'east' },
     ];
-    if (/dining/.test(kind) && width >= 4.2 && depth >= 4.2) {
-      pieces = pieces.filter((piece) => piece.id !== 'kitchen-island');
-      const tableW = fitW(.38, 1.5, .9), tableD = .82, tableX = (width - tableW) / 2, tableY = Math.max(1.25, depth * .47);
+    if (combined && width >= 3.6 && depth >= 4) {
+      const tableY = Math.min(depth - tableD - .85, diningY + language.placement);
       pieces.push(
-        item('dining-table', 'Compact Dining Table', 'table', tableX, tableY, tableW, tableD, 'center', finish.wood, timber, .18),
-        item('dining-chair-n', 'Dining Chair', 'seating', tableX + (tableW - .44) / 2, tableY - .52, .44, .46, 'north', finish.upholstery, fabric, .08),
-        item('dining-chair-s', 'Dining Chair', 'seating', tableX + (tableW - .44) / 2, tableY + tableD + .08, .44, .46, 'south', finish.upholstery, fabric, .08),
+        item('dining-table', `${language.table}`, 'table', tableX, tableY, tableW, tableD, 'center', finish.wood, timber, .18),
+        { ...item('dining-chair-n', 'Dining Chair', 'seating', tableX + (tableW - .46) / 2, tableY - .56, .46, .46, 'north', finish.upholstery, fabric, .5), rotation: 0, relativeTo: 'dining-table', relativeSide: 'north' },
+        { ...item('dining-chair-s', 'Dining Chair', 'seating', tableX + (tableW - .46) / 2, tableY + tableD + .1, .46, .46, 'south', finish.upholstery, fabric, .5), rotation: 180, relativeTo: 'dining-table', relativeSide: 'south' },
       );
+    } else if (!combined) {
+      pieces.push(item('kitchen-island', 'Kitchen Island', 'table', (width - fitW(.4, 1.45, .85)) / 2, Math.max(1.2, depth * .43), fitW(.4, 1.45, .85), .72, 'center', finish.wood, timber, .3));
     }
     if (width < 4 || depth < 4) pieces = pieces.filter((piece) => piece.id !== 'kitchen-island');
   } else if (bath) {
@@ -76,13 +96,13 @@ export function createRoomFurnitureSuggestions(
     ];
   } else if (dining) {
     const tableW = fitW(.45, 1.8, 1.0), tableD = fitD(.3, .95, .72);
-    const tableX = (width - tableW) / 2, tableY = Math.max(.55, (depth - tableD) / 2);
+    const tableX = (width - tableW) / 2, tableY = Math.max(.55, (depth - tableD) / 2 + language.placement);
     pieces = [
-      item('dining-table', 'Solid Timber Dining Table', 'table', tableX, tableY, tableW, tableD, 'center', finish.wood, timber, .28),
-      item('dining-chair-n', 'Upholstered Dining Chair', 'seating', tableX + (tableW - .48) / 2, tableY - .58, .48, .5, 'north', finish.upholstery, fabric, .12),
-      item('dining-chair-s', 'Upholstered Dining Chair', 'seating', tableX + (tableW - .48) / 2, tableY + tableD + .12, .48, .5, 'south', finish.upholstery, fabric, .12),
-      item('dining-chair-w', 'Upholstered Dining Chair', 'seating', Math.max(.04, tableX - .58), tableY + (tableD - .48) / 2, .5, .48, 'west', finish.upholstery, fabric, .12),
-      item('dining-chair-e', 'Upholstered Dining Chair', 'seating', Math.min(width - .54, tableX + tableW + .12), tableY + (tableD - .48) / 2, .5, .48, 'east', finish.upholstery, fabric, .12),
+      item('dining-table', language.table, 'table', tableX, tableY, tableW, tableD, 'center', finish.wood, timber, .28),
+      { ...item('dining-chair-n', language.chair, 'seating', tableX + (tableW - .48) / 2, tableY - .6, .48, .5, 'north', finish.upholstery, fabric, .5), rotation: 0, relativeTo: 'dining-table', relativeSide: 'north' },
+      { ...item('dining-chair-s', language.chair, 'seating', tableX + (tableW - .48) / 2, tableY + tableD + .1, .48, .5, 'south', finish.upholstery, fabric, .5), rotation: 180, relativeTo: 'dining-table', relativeSide: 'south' },
+      { ...item('dining-chair-w', language.chair, 'seating', Math.max(.04, tableX - .6), tableY + (tableD - .5) / 2, .5, .48, 'west', finish.upholstery, fabric, .5), rotation: 90, relativeTo: 'dining-table', relativeSide: 'west' },
+      { ...item('dining-chair-e', language.chair, 'seating', Math.min(width - .54, tableX + tableW + .1), tableY + (tableD - .5) / 2, .5, .48, 'east', finish.upholstery, fabric, .5), rotation: 270, relativeTo: 'dining-table', relativeSide: 'east' },
       item('dining-sideboard', 'Dining Sideboard', 'storage', (width - fitW(.55, 1.6, .9)) / 2, depth - .55, fitW(.55, 1.6, .9), .42, 'south', finish.wood, timber, .18),
     ];
   } else if (study) {
@@ -97,7 +117,7 @@ export function createRoomFurnitureSuggestions(
     const sofaW = fitW(.58, 2.75, 1.5), sofaD = fitD(.22, .95, .72);
     const rugW = fitW(.78, 3.7, 1.8), rugD = fitD(.52, 3.1, 1.6);
     pieces = [
-      item('living-sofa', style === 'traditional' ? 'Tufted Lounge Sofa' : 'Tailored Lounge Sofa', 'seating', (width - sofaW) / 2, .78, sofaW, sofaD, 'north', finish.upholstery, fabric, .3),
+      item('living-sofa', language.sofa, 'seating', (width - sofaW) / 2, .78 + language.placement, sofaW, sofaD, 'north', finish.upholstery, fabric, .3),
       item('living-rug', style === 'traditional' ? 'Heritage Pattern Area Rug' : 'Textured Area Rug', 'decor', (width - rugW) / 2, Math.max(.5, depth * .28), rugW, rugD, 'center', finish.upholstery, color('secondary', '#e5dfd5'), 0),
       item('living-coffee', 'Timber Coffee Table', 'table', (width - fitW(.28, 1.25, .75)) / 2, depth * .53, fitW(.28, 1.25, .75), .58, 'center', finish.wood, timber, .24),
       item('living-chair', 'Accent Armchair', 'seating', Math.max(.12, width - .98), depth * .34, .82, .82, 'east', finish.upholstery, accent, .25),

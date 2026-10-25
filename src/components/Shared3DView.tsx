@@ -4,7 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createFloorMaterial, createFurnitureModel, addStyledDecor } from '../three/interiorVisuals';
-import { defaultRoomOpenings } from '../services/layoutOptimizer';
+import { defaultRoomOpenings, furnitureFootprint } from '../services/layoutOptimizer';
 import {
   FloorPlanResult,
   FurnitureItem,
@@ -564,9 +564,9 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         furnitureDataRef.current = interiorData.furniture.map((f) => ({ ...f }));
 
         interiorData.furniture.forEach((item) => {
-          const rotatedFootprint = (item.rotation || 0) % 180 !== 0;
-          const footprintWidth = rotatedFootprint ? item.depth : item.width;
-          const footprintDepth = rotatedFootprint ? item.width : item.depth;
+          const footprint = furnitureFootprint(item);
+          const footprintWidth = footprint.width;
+          const footprintDepth = footprint.depth;
           let itemPosX = item.x + footprintWidth / 2 - roomW / 2;
           let itemPosZ = item.y + footprintDepth / 2 - roomL / 2;
           if (polygonCorners) {
