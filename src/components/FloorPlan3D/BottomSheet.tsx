@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Footprints, Layers, Moon, RotateCcw, Sun, Tag, X } from 'lucide-react';
+import { Download, Footprints, Layers, Moon, Paintbrush, RotateCcw, Sun, Tag, X } from 'lucide-react';
 
 interface BottomSheetProps {
   open: boolean;
@@ -17,6 +17,9 @@ interface BottomSheetProps {
   onExport: () => void;
   onWalk: () => void;
   onExitWalk: () => void;
+  // 2.1 — Design panel toggle for small screens
+  editorOpen?: boolean;
+  onDesign?: () => void;
 }
 
 export const BottomSheet: React.FC<BottomSheetProps> = (props) => {
@@ -27,6 +30,18 @@ export const BottomSheet: React.FC<BottomSheetProps> = (props) => {
       <div className="absolute bottom-0 inset-x-0 max-h-[45%] overflow-auto rounded-t-2xl bg-white p-4 pb-[env(safe-area-inset-bottom)] shadow-lg" onClick={(event) => event.stopPropagation()}>
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-stone-300" />
         <div className="mb-2 flex items-center justify-between font-medium text-stone-900"><span>Controls</span><button className="rounded p-2" onClick={props.onClose} title="Close controls"><X className="h-5 w-5" /></button></div>
+        {/* 2.1 — Design button on small screens */}
+        {props.onDesign && (
+          <button
+            id="btn-design-toggle-mobile"
+            className={`${row} font-medium ${props.editorOpen ? 'text-cyan-700' : ''}`}
+            onClick={props.onDesign}
+            aria-pressed={props.editorOpen}
+          >
+            <Paintbrush className="h-5 w-5" />
+            Design {props.editorOpen ? '(open)' : ''}
+          </button>
+        )}
         <button className={row} onClick={props.mode === 'walk' ? props.onExitWalk : props.onWalk}><Footprints className="h-5 w-5" />{props.mode === 'walk' ? 'Exit walk' : 'Walk'}</button>
         <button className={row} onClick={props.onCeilings} aria-pressed={props.showCeilings}><Layers className="h-5 w-5" />Ceiling {props.showCeilings ? 'on' : 'off'}</button>
         <button className={row} onClick={props.onCutaway} aria-pressed={props.cutaway}>Cutaway {props.cutaway ? 'on' : 'off'}</button>

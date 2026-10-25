@@ -89,6 +89,27 @@ export interface FloorPlanFurniture {
   rotation?: number;
 }
 
+export type FinishMaterialId = 'paint' | 'tile' | 'marble' | 'wood';
+
+export interface SurfaceFinish {
+  materialId: FinishMaterialId;
+  color?: string;
+  variantId?: string;
+  scale?: number;
+  rotation?: number;
+  roughness?: number;
+}
+
+export interface RoomFinishOverrides {
+  floor?: SurfaceFinish;
+  ceiling?: SurfaceFinish;
+}
+
+export interface FloorPlanFinishes {
+  rooms?: Record<string, RoomFinishOverrides>;
+  walls?: Record<string, SurfaceFinish>;
+}
+
 export interface FloorPlanResult {
   plotWidth: number; // meters
   plotLength: number; // meters
@@ -105,6 +126,7 @@ export interface FloorPlanResult {
   }[];
   architecturalStyle?: string;
   designNotes?: string;
+  finishes?: FloorPlanFinishes;
 }
 
 // Workflow 2: Interior Design Types

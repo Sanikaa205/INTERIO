@@ -151,6 +151,10 @@ export default function App() {
     setActiveTab('3d-studio');
   };
 
+  const handleFloorPlanChange = (updatedPlan: FloorPlanResult) => {
+    setActive3DData((previous) => active3DType === 'floorplan' && previous ? updatedPlan : previous);
+  };
+
   const triggerSaveFloorPlan = (result: FloorPlanResult) => {
     setPendingSaveData({
       data: result,
@@ -454,6 +458,7 @@ export default function App() {
               onBack={() => setActiveTab('floorplan')}
               onBackToHome={() => setActiveTab('dashboard')}
               onSaveProject={() => triggerSaveFloorPlan(active3DData as FloorPlanResult)}
+              onPlanChange={handleFloorPlanChange}
             />
           )}
 
