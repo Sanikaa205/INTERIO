@@ -89,3 +89,29 @@ test('excludes selection overlay meshes from GLB export', async () => {
   wallMat.dispose();
   overlayMat.dispose();
 });
+
+// 5.7 — a wall box with different face materials exports one primitive per face material.
+test('exports a multi-material box with each face material', async () => {
+  installExporterCanvas();
+  const living = new THREE.MeshStandardMaterial({ color: '#b9c5b1' });
+  const kitchen = new THREE.MeshStandardMaterial({ color: '#a2452f' });
+  const base = new THREE.MeshStandardMaterial({ color: '#e7e1d8' });
+  // BoxGeometry order: px, nx, py, ny, pz, nz
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [base, base, base, base, living, kitchen]);
+  const overlay = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial());
+  overlay.userData.selectionOverlay = true;
+  const root = new THREE.Group();
+  root.add(wall, overlay);
+
+  const json = readGlbJson(await serializeHouseGlb(root));
+  const meshes = json.meshes as Array<{ primitives: Array<{ material: number }> }>;
+  const materials = json.materials as Array<{ pbrMetallicRoughness?: { baseColorFactor?: number[] } }>;
+  assert.equal(meshes.length, 1, 'overlay must not be exported');
+  assert.equal(meshes[0].primitives.length, 6, 'one primitive per box face group');
+  assert.equal(new Set(meshes[0].primitives.map((p) => p.material)).size, 3, 'shared materials are deduplicated');
+  assert.equal(materials.length, 3);
+  const reds = materials.map((m) => m.pbrMetallicRoughness?.baseColorFactor?.[0] ?? 0);
+  assert.ok(Math.max(...reds) > Math.min(...reds), 'face materials stay distinct');
+
+  [living, kitchen, base].forEach((m) => m.dispose());
+});

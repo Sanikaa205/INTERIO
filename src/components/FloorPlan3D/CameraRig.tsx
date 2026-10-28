@@ -44,19 +44,36 @@ export const CameraRig = forwardRef<CameraRigHandle, CameraRigProps>(
       invalidate();
     };
 
+    // Moves the camera toward (negative) or away from (positive) the orbit target.
+    const moveAlongView = (amount: number) => {
+      const origin = controls.current ? controls.current.target : target.current;
+      const away = new THREE.Vector3().subVectors(camera.position, origin).normalize();
+      camera.position.addScaledVector(away, amount);
+      userMoved.current = true;
+      controls.current?.update(); // applies min/max distance clamping
+      invalidate();
+    };
+
     // 2.4 — Expose imperative commands to parent via ref.
     useImperativeHandle(ref, () => ({
       fit() {
+        animated.current = false;
         userMoved.current = false;
         applyFit();
       },
       topDown() {
         const cx = (model.bounds.minX + model.bounds.maxX) / 2;
         const cz = (model.bounds.minZ + model.bounds.maxZ) / 2;
-        const w = model.bounds.maxX - model.bounds.minX;
-        const d = model.bounds.maxZ - model.bounds.minZ;
-        const dist = Math.max(w, d) * 1.2;
-        camera.position.set(cx, WALL_HEIGHT + dist, cz);
+        const w = Math.max(0.1, model.bounds.maxX - model.bounds.minX);
+        const d = Math.max(0.1, model.bounds.maxZ - model.bounds.minZ);
+        // Height at which the whole footprint fits in both canvas directions.
+        const halfFov = (50 * Math.PI) / 360;
+        const aspect = Math.max(0.1, size.width / Math.max(1, size.height));
+        const needed = Math.max(d / 2 / Math.tan(halfFov), w / 2 / (Math.tan(halfFov) * aspect)) * 1.15;
+        const height = Math.min(fit.maxDistance, Math.max(fit.minDistance, needed));
+        animated.current = false;
+        userMoved.current = true; // keep this view when the canvas is resized
+        camera.position.set(cx, height, cz + 0.001);
         target.current.set(cx, 0, cz);
         if (controls.current) {
           controls.current.target.copy(target.current);
@@ -65,27 +82,20 @@ export const CameraRig = forwardRef<CameraRigHandle, CameraRigProps>(
         invalidate();
       },
       zoomIn() {
-        const dir = new THREE.Vector3().subVectors(
-          controls.current ? controls.current.target : target.current,
-          camera.position,
-        ).normalize();
-        camera.position.addScaledVector(dir, fit.minDistance * 0.4);
-        invalidate();
+        moveAlongView(-fit.minDistance * 0.4);
       },
       zoomOut() {
-        const dir = new THREE.Vector3().subVectors(
-          camera.position,
-          controls.current ? controls.current.target : target.current,
-        ).normalize();
-        camera.position.addScaledVector(dir, fit.minDistance * 0.4);
-        invalidate();
+        moveAlongView(fit.minDistance * 0.4);
       },
     }));
 
+    // Only a new model or an explicit reset refits here. Canvas resizes (e.g.
+    // the design panel opening) are handled in useFrame so they never jump a
+    // camera the user has moved.
     useEffect(() => {
       applyFit();
       userMoved.current = false;
-    }, [model, resetToken, fit]);
+    }, [model, resetToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
       const room = focusedRoomId ? model.rooms.find((item) => item.id === focusedRoomId) : undefined;
@@ -102,7 +112,7 @@ export const CameraRig = forwardRef<CameraRigHandle, CameraRigProps>(
 
     useFrame(() => {
       const aspect = size.width / Math.max(1, size.height);
-      if (Math.abs(aspect / lastAspect.current - 1) > 0.1) {
+      if (Math.abs(aspect / lastAspect.current - 1) > 0.02) {
         lastAspect.current = aspect;
         // 2.4: only refit on aspect change if user hasn't manually moved
         if (!userMoved.current) applyFit(fitCamera(model.bounds, 50, aspect));

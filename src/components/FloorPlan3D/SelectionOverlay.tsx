@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import * as THREE from 'three';
+import { faceNormal, type FaceDir } from './model/wallFaces';
 
 /**
  * 1.2 — Selection highlight overlay.
@@ -65,6 +66,40 @@ export const WallSelectionOverlay: React.FC<WallOverlayProps> = ({ position, siz
       userData={{ selectionOverlay: true }}
     >
       <boxGeometry args={[1, 1, 1]} />
+    </mesh>
+  );
+};
+
+interface FaceOverlayProps {
+  /** World-space centre of the wall piece. */
+  position: [number, number, number];
+  /** Piece length along the wall, height, and wall thickness (metres). */
+  length: number;
+  height: number;
+  thickness: number;
+  axis: 'x' | 'z';
+  /** Direction the selected face looks toward. */
+  dir: FaceDir;
+}
+
+const FACE_ROTATION_Y: Record<FaceDir, number> = { pz: 0, nz: Math.PI, px: Math.PI / 2, nx: -Math.PI / 2 };
+
+/**
+ * Highlight for a single wall face: a thin translucent quad 2 mm in front of
+ * the face, so the real material is never touched.
+ */
+export const WallFaceSelectionOverlay: React.FC<FaceOverlayProps> = ({ position, length, height, thickness, dir }) => {
+  const n = faceNormal(dir);
+  const offset = thickness / 2 + 0.002;
+  return (
+    <mesh
+      position={[position[0] + n.x * offset, position[1], position[2] + n.z * offset]}
+      rotation={[0, FACE_ROTATION_Y[dir], 0]}
+      material={OVERLAY_MATERIAL}
+      renderOrder={1}
+      userData={{ selectionOverlay: true }}
+    >
+      <planeGeometry args={[length, height]} />
     </mesh>
   );
 };

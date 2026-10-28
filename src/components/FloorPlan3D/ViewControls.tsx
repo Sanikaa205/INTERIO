@@ -6,7 +6,7 @@ interface ViewControlsProps {
   cameraRef: React.RefObject<CameraRigHandle | null>;
 }
 
-const btn = 'flex h-8 w-8 items-center justify-center rounded-lg bg-stone-900/90 border border-stone-700 text-stone-300 hover:bg-stone-700 hover:text-white transition-colors backdrop-blur-md';
+const btn = 'flex h-11 w-11 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-stone-900/90 border border-stone-700 text-stone-300 hover:bg-stone-700 hover:text-white transition-colors backdrop-blur-md';
 
 /**
  * 2.4 — Small floating cluster of view controls: Fit, Top-down, Zoom ±.

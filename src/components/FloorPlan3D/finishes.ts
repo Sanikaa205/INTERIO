@@ -1,6 +1,9 @@
+import { OUTSIDE_FACE } from './model/wallFaces';
 import type { FinishMaterialId, RoomFinishOverrides, SurfaceFinish } from '../../types';
 
-const FINISH_MATERIAL_IDS: readonly FinishMaterialId[] = ['paint', 'tile', 'marble', 'wood'];
+const FINISH_MATERIAL_IDS: readonly FinishMaterialId[] = [
+  'paint', 'tile', 'marble', 'wood', 'granite', 'concrete', 'brick', 'stone', 'wallpaper', 'plaster',
+];
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 export function isValidHexColor(value: unknown): value is string {
@@ -58,6 +61,31 @@ export function getWallFinishOverride(
   if (!isRecord(finishes) || !isRecord(finishes.walls)) return undefined;
   return sanitizeFinish(finishes.walls[wallId]);
 }
+
+/** Finish stored for one face of a wall (`faceKey` is a room id or `OUTSIDE_FACE`). */
+export function getWallFaceFinishOverride(
+  finishes: unknown,
+  wallId: string,
+  faceKey: string,
+): SurfaceFinish | undefined {
+  if (!isRecord(finishes) || !isRecord(finishes.wallFaces)) return undefined;
+  const faces = finishes.wallFaces[wallId];
+  return isRecord(faces) ? sanitizeFinish(faces[faceKey]) : undefined;
+}
+
+/**
+ * Finish that applies to a wall face: its own override, else the legacy
+ * whole-wall finish, else undefined (the renderer then uses its default).
+ */
+export function resolveWallFaceFinish(
+  finishes: unknown,
+  wallId: string,
+  faceKey: string,
+): SurfaceFinish | undefined {
+  return getWallFaceFinishOverride(finishes, wallId, faceKey) ?? getWallFinishOverride(finishes, wallId);
+}
+
+export { OUTSIDE_FACE };
 
 export function resolveSurfaceFinish(
   override: SurfaceFinish | undefined,

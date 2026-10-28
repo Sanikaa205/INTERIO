@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { ArrowLeft, BookmarkPlus, Home, Paintbrush } from 'lucide-react';
 import { FloorPlanResult } from '../../types';
 import { buildHouseModel } from './model/buildHouseModel';
+import { houseGeometryKey } from './model/geometryKey';
 import { Floors } from './Floors';
 import { Walls } from './Walls';
 import { Doors } from './Doors';
@@ -23,9 +24,12 @@ import { FallbackNotice } from './FallbackNotice';
 import { isWebGLAvailable } from './webgl';
 import { RendererDiagnostics } from './RendererDiagnostics';
 import type { SelectedSurface } from './finishTypes';
-import { resetSurfaceFinish, setSurfaceFinish } from './finishUpdates';
+import {
+  pruneOrphanFinishes, resetAllFinishes, resetRoomFinishes, resetSurfaceFinish, resetWholeWall,
+  setRoomWallsFinish, setSurfaceFinish, setWholeWallFinish,
+} from './finishUpdates';
 import type { SurfaceFinish } from '../../types';
-import { DesignPanel, DesignPanelTrigger } from './DesignPanel';
+import { DesignPanel, DesignPanelTrigger, type ResetAction, type WallScope } from './DesignPanel';
 import { ViewControls } from './ViewControls';
 
 interface FloorPlan3DProps {
@@ -67,8 +71,12 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   // 2.1 — "Design" panel visibility; always toggleable, not dependent on 3D click
   const [editorOpen, setEditorOpen] = useState(false);
-  const size = useContainerSize(container);
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  // Layout is decided from the whole viewer, not the canvas, so opening the sidebar cannot flip it.
+  const size = useContainerSize(root);
   const isSmall = size.width > 0 && size.width < 820;
+  const [panelWidth, setPanelWidth] = useState(340);
+  const sidebarOpen = editorOpen && !isSmall && mode !== 'walk';
   const [contextLost, setContextLost] = useState(false);
   const inputRef = useRef<WalkInput>({ forward: 0, strafe: 0, run: false });
   const orbitSettings = useRef({ ceilings: false, cutaway: false });
@@ -79,15 +87,25 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   // 1.1 — Memoize geometry on geometry inputs only (rooms + plot size), so
   // finish edits (which only change plan.finishes) do not rebuild the model.
   const geometryKey = useMemo(
-    () => JSON.stringify({ rooms: plan.rooms, circulation: plan.circulation, plotWidth: plan.plotWidth, plotLength: plan.plotLength }),
-    [plan.rooms, plan.circulation, plan.plotWidth, plan.plotLength],
+    () => houseGeometryKey(plan),
+    [plan.rooms, plan.circulation, plan.plotWidth, plan.plotLength], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const model = useMemo(() => buildHouseModel(plan), [geometryKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const wallIds = useMemo(() => model.walls.map((wall) => wall.id), [model]);
+
+  // Camera-only reset: the selection (and so the design panel) is kept.
+  // Wall ids come from geometry, so when the layout changes drop finishes whose
+  // wall, face or room is gone. Skipped on first render; rendering already
+  // ignores orphans, so this only keeps saved data tidy.
+  const prunedGeometry = useRef(geometryKey);
+  useEffect(() => {
+    if (prunedGeometry.current === geometryKey) return;
+    prunedGeometry.current = geometryKey;
+    const pruned = pruneOrphanFinishes(plan, model);
+    if (pruned !== plan) onPlanChange(pruned);
+  }, [geometryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetView = () => {
     setFocusedRoomId(null);
-    setSelectedSurface(null);
     setResetToken((value) => value + 1);
   };
   const exportGlb = async () => {
@@ -99,13 +117,26 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
       setExportError('Unable to export the floor plan. Please try again.');
     }
   };
-  const changeSelectedFinish = (finish: SurfaceFinish) => {
-    if (!selectedSurface) return;
-    onPlanChange(setSurfaceFinish(plan, selectedSurface, finish, wallIds));
+  // The panel names the surface it edits, so edits never depend on 3D selection.
+  const changeFinish = (surface: SelectedSurface, finish: SurfaceFinish, scope: WallScope = 'face') => {
+    if (surface.kind === 'wall-face' && scope !== 'face') {
+      const wall = model.walls.find((item) => item.id === surface.wallId);
+      if (!wall) return;
+      onPlanChange(scope === 'both'
+        ? setWholeWallFinish(plan, wall, finish)
+        : setRoomWallsFinish(plan, surface.faceKey, finish, model.walls));
+      return;
+    }
+    onPlanChange(setSurfaceFinish(plan, surface, finish, model.walls));
   };
-  const resetSelectedFinish = () => {
-    if (!selectedSurface) return;
-    onPlanChange(resetSurfaceFinish(plan, selectedSurface, wallIds));
+  const resetFinish = (surface: SelectedSurface) => {
+    onPlanChange(resetSurfaceFinish(plan, surface, model.walls));
+  };
+  const resetMore = (action: ResetAction) => {
+    if (action.type === 'wall') onPlanChange(resetWholeWall(plan, action.wallId));
+    else if (action.type === 'room') onPlanChange(resetRoomFinishes(plan, action.roomId));
+    else onPlanChange(resetAllFinishes(plan));
+    setSelectedSurface(null);
   };
   useWalkInput(inputRef, mode === 'walk');
   const enterWalk = () => {
@@ -142,13 +173,14 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
   const handleSelectSurface = (surface: SelectedSurface) => {
     setSelectedSurface(surface);
     if (!editorOpen) setEditorOpen(true);
+    setControlsOpen(false); // the controls sheet and design panel are never open together
   };
 
   return (
     // 2.2 — flex column: canvas flex-1, panel below (docked, not overlapping)
-    <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
+    <div ref={setRoot} className={`relative w-full h-[calc(100vh-5rem)] flex ${isSmall ? 'flex-col' : 'flex-row'} bg-slate-950 overflow-hidden select-none`}>
       {/* Top Floating Control Bar */}
-      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none z-10">
+      <div className="absolute top-4 left-4 flex items-center justify-between pointer-events-none z-10" style={{ right: sidebarOpen ? panelWidth + 16 : 16 }}>
         {/* Left: Back & Project Title */}
         <div className="flex items-center gap-2 pointer-events-auto">
           <button
@@ -184,11 +216,11 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
         {/* Right: Design button (2.1) + Save */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
           {/* 2.1 — "Design" button always visible in top bar */}
-          {!isSmall && (
+          {mode === 'orbit' && (
             <button
               id="btn-design-toggle"
               aria-pressed={editorOpen}
-              onClick={() => setEditorOpen((v) => !v)}
+              onClick={() => { setEditorOpen((v) => !v); setControlsOpen(false); }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 backdrop-blur-md transition-all border ${
                 editorOpen
                   ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300'
@@ -213,7 +245,7 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
       </div>
 
       {/* 3D Canvas — flex-1 so it gives space to the panel below */}
-      <div ref={setContainer} className="relative w-full flex-1 min-h-[320px] rounded-lg" style={{ touchAction: 'none' }} onDoubleClick={resetView}>
+      <div ref={setContainer} className="relative min-w-0 flex-1 min-h-[160px] rounded-lg" style={{ touchAction: 'none' }} onDoubleClick={resetView}>
         <Toolbar
           showCeilings={showCeilings}
           cutaway={cutaway}
@@ -229,7 +261,7 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
           onWalk={enterWalk}
           onExitWalk={exitWalk}
           isSmall={isSmall}
-          onOpenControls={() => setControlsOpen(true)}
+          onOpenControls={() => { setControlsOpen(true); setEditorOpen(false); }}
         />
         <BottomSheet
           open={controlsOpen && isSmall}
@@ -258,12 +290,12 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
         {/* 2.4 — View controls */}
         {mode === 'orbit' && <ViewControls cameraRef={cameraRigRef} />}
         {webglFailed ? <FallbackNotice onBack={onBack} onRetry={() => { setContextLost(false); setWebglFailed(!isWebGLAvailable()); }} /> : <CanvasErrorBoundary onError={() => setWebglFailed(true)}>
-        <Canvas frameloop={mode === 'walk' ? 'always' : 'demand'} dpr={[1, Math.min(typeof window === 'undefined' ? 1 : window.devicePixelRatio, isSmall ? 1.5 : 2)]} gl={{ antialias: !isSmall, powerPreference: 'high-performance' }} camera={{ fov: 50 }} onPointerMissed={resetView}>
+        <Canvas frameloop={mode === 'walk' ? 'always' : 'demand'} dpr={[1, Math.min(typeof window === 'undefined' ? 1 : window.devicePixelRatio, isSmall ? 1.5 : 2)]} gl={{ antialias: !isSmall, powerPreference: 'high-performance' }} camera={{ fov: 50 }} onPointerMissed={() => setFocusedRoomId(null)}>
           <color attach="background" args={[night ? '#07101f' : '#b9d9f2']} />
           <RendererDiagnostics />
           <Lighting model={model} night={night} isSmall={isSmall} />
           <group ref={houseRef} onClick={(event) => event.stopPropagation()}>
-            <Floors model={model} finishes={plan.finishes} focusedRoomId={focusedRoomId} selectedSurface={selectedSurface} onFocus={setFocusedRoomId} onSelectSurface={handleSelectSurface} onClearFocus={resetView} />
+            <Floors model={model} finishes={plan.finishes} focusedRoomId={focusedRoomId} selectedSurface={selectedSurface} onFocus={setFocusedRoomId} onSelectSurface={handleSelectSurface} onClearFocus={() => setFocusedRoomId(null)} />
             <Walls model={model} cutaway={cutaway} finishes={plan.finishes} selectedSurface={selectedSurface} onSelectSurface={handleSelectSurface} />
             <Doors model={model} />
             <Windows model={model} />
@@ -276,7 +308,7 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
         </CanvasErrorBoundary>}
       </div>
 
-      {/* 2.2 — Docked DesignPanel below canvas (not overlapping, shrinks canvas) */}
+      {/* Docked DesignPanel: right sidebar on wide screens, bottom drawer on small ones. It shrinks the canvas instead of covering it. */}
       {mode !== 'walk' && (
         editorOpen ? (
           <DesignPanel
@@ -287,11 +319,15 @@ export const FloorPlan3D: React.FC<FloorPlan3DProps> = ({
             showCeilings={showCeilings}
             onToggle={() => setEditorOpen(false)}
             onSelectSurface={handleSelectSurface}
-            onChange={changeSelectedFinish}
-            onReset={resetSelectedFinish}
+            isSmall={isSmall}
+            width={panelWidth}
+            onWidthChange={setPanelWidth}
+            onChange={changeFinish}
+            onReset={resetFinish}
+            onResetMore={resetMore}
           />
         ) : (
-          <DesignPanelTrigger onClick={() => setEditorOpen(true)} />
+          isSmall && <DesignPanelTrigger onClick={() => setEditorOpen(true)} />
         )
       )}
     </div>

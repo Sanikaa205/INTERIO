@@ -89,7 +89,9 @@ export interface FloorPlanFurniture {
   rotation?: number;
 }
 
-export type FinishMaterialId = 'paint' | 'tile' | 'marble' | 'wood';
+export type FinishMaterialId =
+  | 'paint' | 'tile' | 'marble' | 'wood'
+  | 'granite' | 'concrete' | 'brick' | 'stone' | 'wallpaper' | 'plaster';
 
 export interface SurfaceFinish {
   materialId: FinishMaterialId;
@@ -107,7 +109,10 @@ export interface RoomFinishOverrides {
 
 export interface FloorPlanFinishes {
   rooms?: Record<string, RoomFinishOverrides>;
+  /** Whole-wall finish (legacy): applies to every face of the wall segment. */
   walls?: Record<string, SurfaceFinish>;
+  /** Per-face finishes: wall id -> room id (or '@outside') -> finish. */
+  wallFaces?: Record<string, Record<string, SurfaceFinish>>;
 }
 
 export interface FloorPlanResult {

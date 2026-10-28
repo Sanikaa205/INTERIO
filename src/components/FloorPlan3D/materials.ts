@@ -28,74 +28,77 @@ export function floorMaterial(color: string): THREE.MeshStandardMaterial {
 }
 
 /**
- * 1.4 — Texture cache keyed by URL + tiling so different repeats on the same
- * image don't share state, and each entry can register independent load callbacks.
+ * 1.4 — Each image is loaded once per URL. Tiled variants (repeat/offset) are
+ * clones that share the loaded image, so different surfaces never share tiling
+ * state. Materials only attach a map once it is usable (an unloaded map
+ * renders black).
  */
-const textureCache = new Map<string, THREE.Texture>();
+interface SourceEntry {
+  texture: THREE.Texture;
+  state: 'loading' | 'loaded' | 'failed';
+  waiting: Array<() => void>;
+}
 
-/**
- * 1.4 — Per-cache-key list of pending `invalidate` callbacks waiting for the
- * texture to finish loading. Cleared once the texture's `onLoad` fires.
- */
-const pendingInvalidators = new Map<string, Array<() => void>>();
+const sourceCache = new Map<string, SourceEntry>();
+const tiledCache = new Map<string, THREE.Texture>();
 
-function getTexture(url: string, repeatX: number, repeatY: number, onLoad?: () => void): THREE.Texture {
-  // Repeat belongs to Texture rather than Material. Cache by its resolved
-  // tiling too, so a finish applied to one surface cannot alter another.
-  const cacheKey = `${url}:${repeatX.toFixed(4)}:${repeatY.toFixed(4)}`;
-  const cached = textureCache.get(cacheKey);
-  if (cached) {
-    // 1.4 — Texture already loaded; call invalidate immediately if provided.
-    // (image.complete is not always available in Three.js, so we check userData)
-    if (onLoad && cached.userData?.loaded) {
-      onLoad();
-    } else if (onLoad) {
-      // Still loading — queue the callback.
-      const queue = pendingInvalidators.get(cacheKey) ?? [];
-      queue.push(onLoad);
-      pendingInvalidators.set(cacheKey, queue);
-    }
-    return cached;
-  }
-
-  // 1.4 — Load with onLoad/onError callbacks; fall back gracefully on error.
-  const texture = new THREE.TextureLoader().load(
+function loadSource(url: string): SourceEntry {
+  let entry = sourceCache.get(url);
+  if (entry) return entry;
+  const created: SourceEntry = { texture: new THREE.Texture(), state: 'loading', waiting: [] };
+  const settle = (state: 'loaded' | 'failed') => {
+    created.state = state;
+    created.waiting.splice(0).forEach((fn) => fn());
+  };
+  created.texture = new THREE.TextureLoader().load(
     url,
-    // onLoad:
-    (tex) => {
-      tex.userData.loaded = true;
-      // Drain all queued invalidators.
-      const queue = pendingInvalidators.get(cacheKey) ?? [];
-      queue.forEach((fn) => fn());
-      pendingInvalidators.delete(cacheKey);
-    },
-    // onProgress: (unused)
+    () => settle('loaded'),
     undefined,
-    // onError: texture failed to load — log a warning; the fallback colour
-    // already set on the material will remain visible.
     () => {
       console.warn(`[materials] Failed to load texture: ${url}`);
-      // Mark as loaded so future callers don't keep queuing.
-      texture.userData.loaded = true;
-      const queue = pendingInvalidators.get(cacheKey) ?? [];
-      queue.forEach((fn) => fn());
-      pendingInvalidators.delete(cacheKey);
+      settle('failed');
     },
   );
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeatX, repeatY);
-  textureCache.set(cacheKey, texture);
-
-  if (onLoad) {
-    const queue = pendingInvalidators.get(cacheKey) ?? [];
-    queue.push(onLoad);
-    pendingInvalidators.set(cacheKey, queue);
-  }
-
-  return texture;
+  sourceCache.set(url, created);
+  entry = created;
+  return entry;
 }
+
+interface Tiling {
+  repeatX: number;
+  repeatY: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/** Calls `onReady` with the tiled texture once loaded, or `null` if the file is missing. */
+function withTexture(url: string, tiling: Tiling, onReady: (texture: THREE.Texture | null) => void): void {
+  const source = loadSource(url);
+  const ready = () => {
+    if (source.state === 'failed') {
+      onReady(null);
+      return;
+    }
+    const key = [url, tiling.repeatX, tiling.repeatY, tiling.offsetX, tiling.offsetY].map((v) => (typeof v === 'number' ? v.toFixed(4) : v)).join(':');
+    let texture = tiledCache.get(key);
+    if (!texture) {
+      texture = source.texture.clone();
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(tiling.repeatX, tiling.repeatY);
+      texture.offset.set(tiling.offsetX, tiling.offsetY);
+      texture.needsUpdate = true; // a clone must be re-uploaded
+      tiledCache.set(key, texture);
+    }
+    onReady(texture);
+  };
+  if (source.state === 'loading') source.waiting.push(ready);
+  else ready();
+}
+
+/** Materials disposed before their texture arrived; they must not be revived. */
+const disposed = new WeakSet<THREE.Material>();
 
 export interface FinishMaterialOptions {
   /** Physical dimensions in metres, used to make texture tiling predictable. */
@@ -103,6 +106,13 @@ export interface FinishMaterialOptions {
   height: number;
   /** Metres represented by one texture repeat. Defaults to one metre. */
   scale?: number;
+  /**
+   * Where the surface starts, in metres, so neighbouring pieces of one face
+   * continue the same pattern. Callers work out the sign for faces
+   * whose U axis runs against the wall direction.
+   */
+  offsetX?: number;
+  offsetY?: number;
   color?: string;
   roughness?: number;
   /**
@@ -121,21 +131,35 @@ export interface FinishMaterialOptions {
  * the texture image is still downloading.
  */
 export function createFinishMaterial(variant: MaterialVariant, options: FinishMaterialOptions): THREE.MeshStandardMaterial {
+  // Textured finishes treat `color` as a tint, so without one the texture shows
+  // its true colour; the variant colour only stands in until the map loads.
   const material = new THREE.MeshStandardMaterial({
     color: options.color ?? variant.color,
     roughness: options.roughness ?? variant.roughness,
   });
   if (!variant.mapUrl) return material;
+  material.addEventListener('dispose', () => disposed.add(material));
 
-  const metresPerRepeat = Number.isFinite(options.scale) && (options.scale ?? 0) > 0 ? options.scale! : 1;
-  const texture = getTexture(
+  const requested = options.scale ?? variant.defaultScale;
+  const metresPerRepeat = Number.isFinite(requested) && (requested ?? 0) > 0 ? requested! : 1;
+  // The fallback colour stays visible until the map is ready; a missing file
+  // simply keeps the fallback colour.
+  withTexture(
     variant.mapUrl,
-    Math.max(options.width, 0.01) / metresPerRepeat,
-    Math.max(options.height, 0.01) / metresPerRepeat,
-    options.onTextureLoad,
+    {
+      repeatX: Math.max(options.width, 0.01) / metresPerRepeat,
+      repeatY: Math.max(options.height, 0.01) / metresPerRepeat,
+      offsetX: (options.offsetX ?? 0) / metresPerRepeat,
+      offsetY: (options.offsetY ?? 0) / metresPerRepeat,
+    },
+    (texture) => {
+      if (!texture || disposed.has(material)) return;
+      material.map = texture;
+      if (!options.color) material.color.set('#ffffff');
+      material.needsUpdate = true;
+      options.onTextureLoad?.();
+    },
   );
-  material.map = texture;
-  material.needsUpdate = true;
   return material;
 }
 

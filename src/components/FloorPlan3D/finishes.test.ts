@@ -3,7 +3,10 @@ import test from 'node:test';
 import type { FloorPlanResult, SurfaceFinish } from '../../types';
 import {
   getRoomFinishOverride,
+  getWallFaceFinishOverride,
   getWallFinishOverride,
+  OUTSIDE_FACE,
+  resolveWallFaceFinish,
   isValidHexColor,
   isValidRoughness,
   isValidScale,
@@ -98,4 +101,33 @@ test('malformed persisted finish trees never throw or create an override', () =>
   assert.deepEqual(getRoomFinishOverride(malformed, 'room', 'floor'), { materialId: 'tile' });
   assert.doesNotThrow(() => getWallFinishOverride(malformed, 'wall'));
   assert.equal(getWallFinishOverride(malformed, 'wall'), undefined);
+});
+
+test('reads and sanitizes a wall-face override, ignoring malformed data', () => {
+  const finishes = {
+    wallFaces: {
+      w1: { living: { materialId: 'brick', color: '#abcdef', bogus: 1 }, '@outside': { materialId: 'nope' }, kitchen: 'x' },
+      w2: 'not-a-record',
+    },
+  };
+  assert.deepEqual(getWallFaceFinishOverride(finishes, 'w1', 'living'), { materialId: 'brick', color: '#abcdef' });
+  assert.equal(getWallFaceFinishOverride(finishes, 'w1', OUTSIDE_FACE), undefined);
+  assert.equal(getWallFaceFinishOverride(finishes, 'w1', 'kitchen'), undefined);
+  assert.equal(getWallFaceFinishOverride(finishes, 'w2', 'living'), undefined);
+  assert.equal(getWallFaceFinishOverride(finishes, 'missing', 'living'), undefined);
+  assert.equal(getWallFaceFinishOverride(undefined, 'w1', 'living'), undefined);
+  assert.equal(getWallFaceFinishOverride({ wallFaces: [] }, 'w1', 'living'), undefined);
+});
+
+test('face resolution: face override, then legacy whole-wall, then none', () => {
+  const finishes = {
+    walls: { w1: { materialId: 'paint', color: '#111111' } },
+    wallFaces: { w1: { living: { materialId: 'wood' } } },
+  };
+  assert.deepEqual(resolveWallFaceFinish(finishes, 'w1', 'living'), { materialId: 'wood' });
+  assert.deepEqual(resolveWallFaceFinish(finishes, 'w1', 'kitchen'), { materialId: 'paint', color: '#111111' });
+  assert.equal(resolveWallFaceFinish(finishes, 'w9', 'kitchen'), undefined);
+  // Old payloads without wallFaces resolve exactly as the legacy getter does.
+  const legacy = { walls: { w1: { materialId: 'tile' } } };
+  assert.deepEqual(resolveWallFaceFinish(legacy, 'w1', 'living'), getWallFinishOverride(legacy, 'w1'));
 });
