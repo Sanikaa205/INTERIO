@@ -337,6 +337,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   const [preferredColors, setPreferredColors] = useState('');
   const [additionalRequirements, setAdditionalRequirements] = useState('');
   const [phaseOneJson, setPhaseOneJson] = useState('');
+  const [variationSeed, setVariationSeed] = useState<number>(0);
 
   // Synchronize if initialStyle changes from props
   useEffect(() => {
@@ -422,13 +423,27 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
         }
         const finalWidth = width > 0 ? width : roomWidth;
         const finalDepth = depth > 0 ? depth : roomLength;
-        const generated = await generateInteriorApi({ roomWidth: finalWidth, roomLength: finalDepth, style, budget, roomType, preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean), additionalRequirements, openings });
+        const nextSeed = result ? variationSeed + 1 : variationSeed;
+        setVariationSeed(nextSeed);
+        const generated = await generateInteriorApi({
+          roomWidth: finalWidth,
+          roomLength: finalDepth,
+          style,
+          budget,
+          roomType,
+          preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean),
+          additionalRequirements,
+          openings,
+          variationSeed: nextSeed,
+        });
         setRoomWidth(generated.roomWidth);
         setRoomLength(generated.roomLength);
         setResult(generated);
         if (generated.furniture.length) onSelectFurniture?.(generated.furniture[0].id);
         return;
       }
+      const nextSeed = result ? variationSeed + 1 : variationSeed;
+      setVariationSeed(nextSeed);
       const generated = await generateInteriorApi({
         roomWidth,
         roomLength,
@@ -438,6 +453,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
         preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean),
         additionalRequirements,
         openings,
+        variationSeed: nextSeed,
       });
 
       setRoomWidth(generated.roomWidth);

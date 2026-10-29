@@ -5,6 +5,7 @@ import {
   SavedProject,
   User,
 } from '../types';
+import type { QwenRenovationInput, QwenRenovationRecommendations } from './qwenRenovation';
 
 const API_BASE = '/api';
 const shouldLogQwenDebug = typeof window !== 'undefined' && window.location.hostname === 'localhost';
@@ -209,6 +210,7 @@ export async function generateInteriorApi(params: {
   preferredColors: string[];
   additionalRequirements: string;
   openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
+  variationSeed?: number;
 }): Promise<InteriorDesignResult> {
   const res = await fetchWithTimeout(`${API_BASE}/gemini/interior`, {
     method: 'POST',
@@ -274,4 +276,15 @@ export async function generateRoomRenovationApi(params: {
     console.log('[QWEN GENERATED IMAGE URL]', data.renovatedImageUrl);
   }
   return data;
+}
+
+export async function getQwenRenovationRecommendations(params: QwenRenovationInput): Promise<QwenRenovationRecommendations> {
+  const res = await fetchWithTimeout(`${API_BASE}/qwen/renovation-recommendations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  }, 90000);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Qwen could not prepare renovation recommendations.');
+  return data as QwenRenovationRecommendations;
 }

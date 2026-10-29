@@ -11,7 +11,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { DesignStyle, Point2D, ReconstructionData } from '../types';
-import { generateRoomRenovationApi, reconstructRoomApi } from '../services/api';
+import { generateRoomRenovationApi, getQwenRenovationRecommendations, reconstructRoomApi } from '../services/api';
 
 const shouldLogQwenDebug = typeof window !== 'undefined' && window.location.hostname === 'localhost';
 
@@ -260,11 +260,21 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
         setError('The renovated image is ready, but reconstruction details could not be prepared. You can generate again to retry the 3D data.');
         return;
       }
+      const qwenRecommendations = await getQwenRenovationRecommendations({
+        roomType,
+        style,
+        budget,
+        conditionAndRequirements: renovationPrompt.trim(),
+        dimensions: generated.estimatedDimensions,
+        existingFurniture: generated.renovationDesign?.furniture?.map(({ name, category, width, depth }) => ({ name, category, width, depth })),
+        existingConstraints: [generated.structuralObservations, ...(generated.detectedFeatures || []), ...(generated.renovationDesign?.openings || []).map((opening) => `${opening.type} on ${opening.wall} wall (${opening.start}m-${opening.end}m)`) ].filter((item): item is string => Boolean(item)),
+      });
       setResult({
         ...generated,
         imageUrl: selectedImage,
         renovatedImageUrl: qwenResult.renovatedImageUrl,
         cornerPoints,
+        qwenRecommendations,
       });
     } catch (err: any) {
       console.error(err);
@@ -662,14 +672,46 @@ export const ReconstructionWorkflow: React.FC<ReconstructionWorkflowProps> = ({
                 )}
               </div>
 
+              {result.qwenRecommendations && (
+                <div className="bg-white rounded-2xl border border-stone-200/80 p-5 space-y-4">
+                  <div>
+                    <h4 className="text-xs font-semibold text-stone-900">Qwen Renovation Recommendations</h4>
+                    <p className="text-xs text-stone-600 leading-relaxed mt-2">{result.qwenRecommendations.designConcept}</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <h5 className="text-[11px] font-semibold text-stone-800 mb-1">Materials</h5>
+                      <ul className="list-disc pl-4 text-xs text-stone-500 space-y-1">{result.qwenRecommendations.materials.map((item, i) => <li key={i}>{item}</li>)}</ul>
+                    </div>
+                    <div>
+                      <h5 className="text-[11px] font-semibold text-stone-800 mb-1">Furniture Changes</h5>
+                      <ul className="list-disc pl-4 text-xs text-stone-500 space-y-1">{result.qwenRecommendations.furnitureChanges.map((item, i) => <li key={i}>{item}</li>)}</ul>
+                    </div>
+                    <div>
+                      <h5 className="text-[11px] font-semibold text-stone-800 mb-1">Lighting</h5>
+                      <ul className="list-disc pl-4 text-xs text-stone-500 space-y-1">{result.qwenRecommendations.lightingChanges.map((item, i) => <li key={i}>{item}</li>)}</ul>
+                    </div>
+                    <div>
+                      <h5 className="text-[11px] font-semibold text-stone-800 mb-1">Renovation Steps</h5>
+                      <ol className="list-decimal pl-4 text-xs text-stone-500 space-y-1">{result.qwenRecommendations.renovationTasks.map((task, i) => <li key={i}><span className="font-medium">{task.step}:</span> {task.details}</li>)}</ol>
+                    </div>
+                  </div>
+                  {result.qwenRecommendations.estimatedCost ? (
+                    <p className="text-[11px] text-stone-600 border-t border-stone-100 pt-3">
+                      Indicative cost range: {result.qwenRecommendations.estimatedCost.currency} {result.qwenRecommendations.estimatedCost.min.toLocaleString()}–{result.qwenRecommendations.estimatedCost.max.toLocaleString()}. {result.qwenRecommendations.estimatedCost.basis}
+                    </p>
+                  ) : <p className="text-[11px] text-stone-500 border-t border-stone-100 pt-3">No cost range provided because the available information is not sufficient for a useful estimate.</p>}
+                </div>
+              )}
+
               {/* Renovation Color Scheme */}
-              {result.renovationDesign?.colorPalette && (
+              {(result.qwenRecommendations?.colorPalette || result.renovationDesign?.colorPalette) && (
                 <div className="bg-white rounded-2xl border border-stone-200/80 p-5 space-y-3">
                   <h4 className="text-xs font-semibold text-stone-900">
                     Transformed Palette
                   </h4>
                   <div className="grid grid-cols-5 gap-2">
-                    {result.renovationDesign.colorPalette.map((swatch, idx) => (
+                    {(result.qwenRecommendations?.colorPalette || result.renovationDesign?.colorPalette || []).map((swatch, idx) => (
                       <div key={idx} className="p-2 rounded-xl border border-stone-200/80 text-center bg-stone-50/50">
                         <div
                           className="w-full h-8 rounded-lg mb-1.5 border border-stone-200/60"

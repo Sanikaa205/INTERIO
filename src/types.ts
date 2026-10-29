@@ -164,6 +164,7 @@ export interface FurnitureItem {
   id: string;
   name: string;
   category: FurnitureCategory;
+  role?: string;
   form?: string;
   x: number; // meters
   y: number; // meters
@@ -176,6 +177,7 @@ export interface FurnitureItem {
   notes?: string;
   estimatedPrice?: string;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  facing?: 'wall' | 'room' | { focal: string };
   clearance?: number;
   assetId?: string;
   assetUrl?: string;
@@ -204,6 +206,14 @@ export interface InteriorDesignResult {
   preferredColors?: string[];
   layoutWarnings?: string[];
   openings?: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
+  generation?: {
+    source: 'ai' | 'algorithmic' | 'fallback';
+    seed?: number;
+    arrangementId?: string;
+    aiFallbackReason?: string;
+  };
+  variationSeed?: number;
+  finishes?: { floor?: string; wall?: string };
 }
 
 // Workflow 3: Existing House Reconstruction Types
@@ -226,6 +236,7 @@ export interface ReconstructionData {
   detectedFeatures?: string[];
   structuralObservations?: string;
   renovationDesign?: InteriorDesignResult;
+  qwenRecommendations?: import('./services/qwenRenovation').QwenRenovationRecommendations;
 }
 
 // Saved Project Type

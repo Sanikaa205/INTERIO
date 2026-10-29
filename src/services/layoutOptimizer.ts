@@ -3,9 +3,12 @@ import type { FurnitureItem } from '../types';
 export interface FurnitureSuggestion extends Partial<FurnitureItem> {
   name: string;
   category: FurnitureItem['category'];
+  role?: string;
+  form?: string;
   width: number;
   depth: number;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  facing?: 'wall' | 'room' | { focal: string };
   clearance?: number;
   relativeTo?: string;
   relativeSide?: 'north' | 'south' | 'east' | 'west';
@@ -85,7 +88,13 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
     const width0 = Math.max(0.25, Number(suggestion.width) || 0.8);
     const depth0 = Math.max(0.25, Number(suggestion.depth) || 0.8);
     let best: (FurnitureItem & { score: number }) | null = null;
-    const preferredRotation = Number(suggestion.rotation);
+    let preferredRotation = Number(suggestion.rotation);
+    if (!Number.isFinite(preferredRotation)) {
+      if (suggestion.preferredWall === 'north') preferredRotation = 0;
+      else if (suggestion.preferredWall === 'south') preferredRotation = 180;
+      else if (suggestion.preferredWall === 'west') preferredRotation = 90;
+      else if (suggestion.preferredWall === 'east') preferredRotation = 270;
+    }
     const rotations = ROTATIONS.slice().sort((a, b) => Number(b === preferredRotation) - Number(a === preferredRotation));
     for (const rotation of rotations) {
       const rotated = rotation % 180 !== 0;
@@ -131,8 +140,16 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
               : target.y + (target.depth - depth) / 2;
             relationshipPenalty = Math.hypot(candidate.x - targetX, candidate.y - targetY);
           }
+
+          // Wall-awareness penalty for orientation: if item is close to a wall, it should face away from it
+          let wallFacingPenalty = 0;
+          if (candidate.y <= 0.5 && rotation !== 0 && (suggestion.category === 'storage' || suggestion.preferredWall === 'north')) wallFacingPenalty += 15;
+          if (room.depth - (candidate.y + depth) <= 0.5 && rotation !== 180 && (suggestion.category === 'storage' || suggestion.preferredWall === 'south')) wallFacingPenalty += 15;
+          if (candidate.x <= 0.5 && rotation !== 90 && (suggestion.category === 'storage' || suggestion.preferredWall === 'west')) wallFacingPenalty += 15;
+          if (room.width - (candidate.x + width) <= 0.5 && rotation !== 270 && (suggestion.category === 'storage' || suggestion.preferredWall === 'east')) wallFacingPenalty += 15;
+
           const rotationPenalty = Number.isFinite(preferredRotation) && rotation !== preferredRotation ? 20 : 0;
-          const score = relationshipPenalty * 12 + anchorDistance * (related ? 0.15 : 4) + rotationPenalty + (related ? 0 : wallPenalty(candidate, room, suggestion.preferredWall)) + centerDistance * 0.05 + y * 0.001 + x * 0.0001 + rotation * 0.00001;
+          const score = relationshipPenalty * 12 + anchorDistance * (related ? 0.15 : 4) + rotationPenalty + wallFacingPenalty + (related ? 0 : wallPenalty(candidate, room, suggestion.preferredWall)) + centerDistance * 0.05 + y * 0.001 + x * 0.0001;
           if (!best || score < best.score) best = { ...candidate, score, rotation, width: width0, depth: depth0 } as FurnitureItem & { score: number };
         }
       }
@@ -140,7 +157,22 @@ export function optimizeFurnitureLayout(suggestions: FurnitureSuggestion[], room
     if (!best) continue; // Gracefully omit a suggested item that cannot fit.
     const { score: _score, ...item } = best;
     const id = suggestion.id || `f_${index + 1}`;
-    placed.push({ ...item, id, name: suggestion.name, category: suggestion.category, height: suggestion.height, material: suggestion.material, color: suggestion.color, notes: suggestion.notes, estimatedPrice: suggestion.estimatedPrice, preferredWall: suggestion.preferredWall, clearance: suggestion.clearance });
+    placed.push({
+      ...item,
+      id,
+      name: suggestion.name,
+      category: suggestion.category,
+      role: suggestion.role,
+      form: suggestion.form,
+      height: suggestion.height,
+      material: suggestion.material,
+      color: suggestion.color,
+      notes: suggestion.notes,
+      estimatedPrice: suggestion.estimatedPrice,
+      preferredWall: suggestion.preferredWall,
+      facing: suggestion.facing,
+      clearance: suggestion.clearance,
+    });
     if (suggestion.relativeTo) placedRelationships.set(id, suggestion.relativeTo);
   }
   return placed;

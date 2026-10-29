@@ -9,7 +9,9 @@ import jwt from 'jsonwebtoken';
 import { Client, handle_file } from '@gradio/client';
 import { defaultRoomOpenings, optimizeFurnitureLayout, roomDoorClearance, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
 import { createRoomFurnitureSuggestions } from './src/services/interiorFurniture';
+import { getStyleRecipe, normalizeRoomType } from './src/services/interiorStyles';
 import { matchFurnitureAsset } from './src/services/furnitureAssets';
+import { createQwenRenovationPrompt, validateQwenRecommendations, type QwenRenovationInput } from './src/services/qwenRenovation';
 import {
   TOPOLOGY_RESPONSE_SCHEMA, createTopologyPrompt, validateTopology,
   type TopologyHint, type EntrySide,
@@ -447,9 +449,10 @@ app.post('/api/gemini/floorplan', async (req, res) => {
 // ----------------------------------------------------
 app.post('/api/gemini/interior', async (req, res) => {
   try {
-    const { roomWidth, roomLength, style, budget, roomType, preferredColors = [], additionalRequirements = '', openings = [] } = req.body;
+    const { roomWidth, roomLength, style, budget, roomType, preferredColors = [], additionalRequirements = '', openings = [], variationSeed = 0 } = req.body;
     const w = Number(roomWidth);
     const l = Number(roomLength);
+    const seedNum = Number(variationSeed) || 0;
     if (!Number.isFinite(w) || !Number.isFinite(l) || w < 1 || l < 1 || w > 50 || l > 50) {
       return res.status(400).json({ error: 'Room width and length must be between 1 and 50 meters.' });
     }
@@ -466,6 +469,8 @@ app.post('/api/gemini/interior', async (req, res) => {
     const defaults = defaultRoomOpenings(w, l);
     const validOpenings = [...submittedOpenings, ...defaults.filter((fallback) => !submittedOpenings.some((opening) => opening.type === fallback.type))];
 
+    const algorithmicBaseline = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements, seedNum);
+
     const styleDirection: Record<string, string> = {
       modern: 'Modern Architectural: sleek silhouettes, clean lines, restrained contrast, matte metal, refined stone and tailored upholstery.',
       minimal: 'Pure Minimalist: few essential pieces, quiet geometric forms, neutral natural materials, concealed storage and ample open floor.',
@@ -479,16 +484,16 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
 
     const finish = (design: any) => {
       const rawSuggestions = Array.isArray(design.furniture) ? design.furniture.slice(0, 20) : [];
-      // Resolve colors from the chosen style first, then apply the user's color
-      // preferences. Gemini's palette remains a prompt input, but cannot erase
-      // the selected style when it returns a generic or stale palette.
-      const colorPalette = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).colorPalette;
+      // Resolve colors from algorithmic baseline
+      const colorPalette = algorithmicBaseline.colorPalette;
       const categories = ['seating', 'table', 'storage', 'bed', 'lighting', 'decor', 'fixture', 'electronics'];
       const walls = ['north', 'south', 'east', 'west', 'center'];
       let suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
         id: typeof item.id === 'string' ? item.id.slice(0, 60) : `f_${index + 1}`,
         name: typeof item.name === 'string' ? item.name.slice(0, 100) : `Furniture ${index + 1}`,
         category: categories.includes(item.category) ? item.category : 'decor',
+        role: typeof item.role === 'string' ? item.role : undefined,
+        form: typeof item.form === 'string' ? item.form : undefined,
         width: Math.min(10, Math.max(0.25, Number(item.width) || 0.8)),
         depth: Math.min(10, Math.max(0.25, Number(item.depth) || 0.8)),
         x: typeof item.x === 'number' && Number.isFinite(item.x) ? item.x : undefined,
@@ -497,6 +502,7 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         clearance: typeof item.clearance === 'number' && Number.isFinite(item.clearance) ? Math.max(0, Math.min(1, item.clearance)) : undefined,
         height: Math.min(4, Math.max(0.1, Number(item.height) || 0.75)),
         preferredWall: walls.includes(item.preferredWall) ? item.preferredWall : 'center',
+        facing: item.facing,
         material: typeof item.material === 'string' ? item.material.slice(0, 100) : undefined,
         color: typeof item.color === 'string' && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : undefined,
         notes: typeof item.notes === 'string' ? item.notes.slice(0, 300) : undefined,
@@ -505,7 +511,7 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
       if (/no tv|without tv|no television/i.test(cleanedRequirements)) {
         suggestions = suggestions.filter((suggestion) => !/tv|television|media console/i.test(suggestion.name));
       }
-      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget);
+      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget, seedNum);
       const roomEssentials: Record<string, RegExp[]> = {
         bedroom: [/bed/i, /wardrobe|closet/i],
         kitchen: [/cabinet|counter/i, /refrigerator|fridge/i],
@@ -515,7 +521,7 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         living: [/sofa|couch/i, /rug/i, /coffee table/i],
         study: [/desk/i, /task chair|office chair/i, /bookcase/i],
       };
-      const typeKey = /bedroom|master bed|sleep/i.test(type) ? 'bedroom' : /kitchen|pantry/i.test(type) && /dining/.test(type.toLowerCase()) ? 'kitchenDining' : /kitchen|pantry/i.test(type) ? 'kitchen' : /bath|powder|washroom|toilet/i.test(type) ? 'bath' : /dining/i.test(type) ? 'dining' : /study|office|work/i.test(type) ? 'study' : 'living';
+      const typeKey = normalizeRoomType(type);
       const essentials = (roomEssentials[typeKey] || []).flatMap((pattern) => {
         if (suggestions.some((suggestion) => pattern.test(suggestion.name))) return [];
         return fallbackSuggestions.filter((suggestion) => pattern.test(suggestion.name)).slice(0, 1);
@@ -565,6 +571,8 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
             if (anchor.rotation !== undefined) suggestion.rotation = anchor.rotation;
             if (anchor.relativeTo) suggestion.relativeTo = anchor.relativeTo;
             if (anchor.relativeSide) suggestion.relativeSide = anchor.relativeSide;
+            if (anchor.role) suggestion.role = anchor.role;
+            if (anchor.form) suggestion.form = anchor.form;
           }
         }
       }
@@ -584,15 +592,16 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         const priceFactor = grade === 'bespoke' ? 5 : grade === 'premium' ? 2.4 : grade === 'essential tier' ? .62 : 1;
         const typicalPrice: Record<string, number> = { seating: 1100, table: 800, storage: 900, bed: 1400, fixture: 550, electronics: 1100, lighting: 350, decor: 180 };
         for (const suggestion of completedSuggestions) {
-          if (!suggestion.name.startsWith(styleNames[selectedStyle])) suggestion.name = `${styleNames[selectedStyle]} ${suggestion.name}`;
+          if (!suggestion.form) suggestion.form = suggestion.name;
+          if (!suggestion.notes) suggestion.notes = `${styleNames[selectedStyle]} aesthetic`;
           suggestion.width = Math.min(w, suggestion.width * sizeFactor);
           suggestion.depth = Math.min(l, suggestion.depth * sizeFactor);
           const styleMaterial = materialByCategory[suggestion.category];
-          if (typeKey !== 'kitchenDining' && styleMaterial) suggestion.material = `${styleMaterial} · ${grade}${suggestion.material ? ` · ${suggestion.material}` : ''}`;
-          else if (typeKey === 'kitchenDining') suggestion.material = `${suggestion.material || 'Style-matched material'} · ${grade}`;
-          suggestion.color = styleColors[suggestion.category] || suggestion.color;
+          if (typeKey !== 'kitchenDining' && styleMaterial && !suggestion.material) suggestion.material = `${styleMaterial} · ${grade}`;
+          else if (suggestion.material && !suggestion.material.includes(grade)) suggestion.material = `${suggestion.material} · ${grade}`;
+          suggestion.color = suggestion.color || styleColors[suggestion.category];
           const middle = Math.round((typicalPrice[suggestion.category] || 500) * priceFactor / 50) * 50;
-          suggestion.estimatedPrice = `$${Math.round(middle * .7).toLocaleString()}–$${Math.round(middle * 1.35).toLocaleString()} ${grade}`;
+          suggestion.estimatedPrice = suggestion.estimatedPrice || `$${Math.round(middle * .7).toLocaleString()}–$${Math.round(middle * 1.35).toLocaleString()} ${grade}`;
         }
       }
       if (typeKey === 'dining' || typeKey === 'kitchenDining') {
@@ -619,18 +628,26 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         ...design, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
         furniture, colorPalette,
         openings: validOpenings,
+        generation: {
+          source: design === algorithmicBaseline ? 'algorithmic' : 'ai',
+          seed: seedNum,
+        },
+        variationSeed: seedNum,
+        finishes: getStyleRecipe(selectedStyle).defaultFinishes,
         layoutWarnings: furniture.length < completedSuggestions.length ? ['A few requested pieces could not fit safely. Adjust the room dimensions or remove a furniture requirement.'] : [],
         designSuggestions: Array.isArray(design.designSuggestions) ? design.designSuggestions.filter((suggestion: unknown) => typeof suggestion === 'string').slice(0, 10) : [],
-        lightingSuggestions: styleLighting(selectedStyle, type, selectedBudget),
-        designPhilosophy: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).designPhilosophy,
-        materialFinishes: generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements).materialFinishes,
+        lightingSuggestions: typeof design.lightingSuggestions === 'string' && design.lightingSuggestions.trim()
+          ? design.lightingSuggestions
+          : algorithmicBaseline.lightingSuggestions,
+        designPhilosophy: algorithmicBaseline.designPhilosophy,
+        materialFinishes: algorithmicBaseline.materialFinishes,
         additionalRequirements: cleanedRequirements, preferredColors: cleanedColors,
       };
     };
 
     const ai = getGeminiClient();
     if (!ai) {
-      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
+      return res.json(finish(algorithmicBaseline));
     }
 
     let text = '';
@@ -3900,6 +3917,7 @@ function roundPlan(value: number): number {
 }
 
 // ----------------------------------------------------
+// ----------------------------------------------------
 // GEMINI WORKFLOW 3: EXISTING HOUSE RECONSTRUCTION
 // ----------------------------------------------------
 async function roomImageToBuffer(imageSource: string): Promise<Buffer> {
@@ -3914,45 +3932,153 @@ async function roomImageToBuffer(imageSource: string): Promise<Buffer> {
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function generateQwenRenovation(imageSource: string, userRenovationPrompt: string) {
-  const originalRoomImageBuffer = await roomImageToBuffer(imageSource);
+
+
+
+async function generateQwenRenovation(
+  imageSource: string,
+  userRenovationPrompt: string
+): Promise<string> {
+  const originalRoomImageBuffer =
+    await roomImageToBuffer(imageSource);
+
+  console.log('[INTERIO Qwen] Connecting to Qwen Space...');
+
   const qwen = await Client.connect('Qwen/Qwen-Image-2.1');
-  const prediction = qwen.predict('/prepare_request', {
-    input_images: [{ image: handle_file(originalRoomImageBuffer) }],
-    original_prompt: [
-      'Use image 1 as the original room.',
-      'Renovate it according to this user request:',
-      userRenovationPrompt,
-      'Preserve the existing room geometry and camera viewpoint.',
-      'Keep walls, doors, windows, floor boundaries, ceiling boundaries,',
-      'openings, and overall room proportions in their original locations.',
-    ].join(' '),
+
+  console.log('[INTERIO Qwen] Qwen Space connected successfully.');
+
+  const originalPrompt = [
+    'Use image 1 as the original room.',
+    'Renovate it according to this user request:',
+    userRenovationPrompt,
+    'Preserve the existing room geometry and camera viewpoint.',
+    'Keep walls, doors, windows, floor boundaries, ceiling boundaries,',
+    'openings, and overall room proportions in their original locations.',
+    'Return a realistic, fully renovated photograph of the same room.',
+  ].join(' ');
+
+  // Step 1: Prepare the request.
+  const preparePrediction = qwen.predict('/prepare_request', {
+    input_images: [
+      { image: handle_file(originalRoomImageBuffer) },
+    ],
+    original_prompt: originalPrompt,
     enable_extend: false,
     custom_size: false,
-    quality: 'quality',
+    quality: 'speed',
     seed: 0,
     randomize_seed: true,
   });
-  const result = await Promise.race([
-    prediction,
-    new Promise<never>((_, reject) => setTimeout(
-      () => reject(new Error('Qwen did not complete within four minutes. Please try again.')),
-      240_000,
-    )),
+
+  const prepareResult = await Promise.race([
+    preparePrediction,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error('Qwen preparation timed out.')),
+        240_000
+      )
+    ),
   ]);
 
-  const generatedImage = result.data?.[0] as { url?: string; path?: string } | string | undefined;
-  const imageUrl = typeof generatedImage === 'string'
-    ? generatedImage
-    : generatedImage?.url || generatedImage?.path;
-  if (!imageUrl) throw new Error('Qwen did not return a renovated room image.');
+  console.log(
+    '[INTERIO Qwen] Preparation result:',
+    JSON.stringify(prepareResult.data, null, 2)
+  );
 
-  // Gradio normally returns `url`, but some runs return only a path. Convert a
-  // Space-relative file path into the public Gradio file URL for the browser.
-  return /^https?:\/\//.test(imageUrl)
-    ? imageUrl
-    : `https://qwen-qwen-image-2-1.hf.space/gradio_api/file=${encodeURIComponent(imageUrl)}`;
+  const preparedData = prepareResult.data as unknown[];
+
+  const preparedImage = preparedData?.[0] as
+    | { url?: string; path?: string }
+    | string
+    | undefined;
+
+  const preparedSeed = Number(preparedData?.[1]);
+
+  const rewrittenPrompt =
+    typeof preparedData?.[2] === 'string' &&
+    preparedData[2].trim()
+      ? preparedData[2]
+      : originalPrompt;
+
+  const preparedImagePath =
+    typeof preparedImage === 'string'
+      ? preparedImage
+      : preparedImage?.path;
+
+  if (
+    !preparedImagePath ||
+    !Number.isFinite(preparedSeed)
+  ) {
+    throw new Error(
+      'Qwen preparation failed: image or seed is missing.'
+    );
+  }
+
+  // Step 2: Request actual image generation.
+  // Do not pass "state" as a named argument.
+  const generationPrediction = qwen.predict(
+    '/generate_request',
+    {
+      original_prompt: rewrittenPrompt,
+      enable_extend: false,
+      custom_size: false,
+      log_dir: './generation_logs_paper_case',
+      seed: preparedSeed,
+      height: 768,
+      width: 1344,
+      negative_prompt: '',
+    }
+  );
+
+  const generationResult = await Promise.race([
+    generationPrediction,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              'Qwen image generation timed out after four minutes.'
+            )
+          ),
+        240_000
+      )
+    ),
+  ]);
+
+  console.log(
+    '[INTERIO Qwen] Generation result:',
+    JSON.stringify(generationResult.data, null, 2)
+  );
+
+  const generatedImage = generationResult.data?.[0] as
+    | { url?: string; path?: string }
+    | string
+    | undefined;
+
+  const imageUrl =
+    typeof generatedImage === 'string'
+      ? generatedImage
+      : generatedImage?.url || generatedImage?.path;
+
+  if (!imageUrl) {
+    throw new Error(
+      'Qwen image generation did not return an output image.'
+    );
+  }
+
+  if (/^https?:\/\//.test(imageUrl)) {
+    return imageUrl;
+  }
+
+  return (
+    'https://qwen-qwen-image-2-1.hf.space/gradio_api/file=' +
+    encodeURIComponent(imageUrl)
+  );
 }
+
+
+
 
 function qwenImageProxyUrl(remoteImageUrl: string) {
   return `/api/qwen/image?url=${encodeURIComponent(remoteImageUrl)}`;
@@ -3975,6 +4101,11 @@ app.get('/api/qwen/image', async (req, res) => {
   try {
     const imageResponse = await fetch(remoteUrl, { signal: AbortSignal.timeout(60_000) });
     const contentType = imageResponse.headers.get('content-type') || '';
+    console.log('[INTERIO Qwen] Image proxy response:', {
+  status: imageResponse.status,
+  contentType,
+  finalUrl: imageResponse.url,
+});
     if (!imageResponse.ok || !contentType.startsWith('image/')) {
       throw new Error(`Qwen image download returned ${imageResponse.status} (${contentType || 'unknown content type'}).`);
     }
@@ -3985,6 +4116,75 @@ app.get('/api/qwen/image', async (req, res) => {
   } catch (proxyErr: any) {
     console.error('[INTERIO Qwen] Generated image proxy failed:', proxyErr?.message || proxyErr);
     return res.status(502).json({ error: 'The generated Qwen image could not be downloaded.' });
+  }
+});
+
+app.post('/api/qwen/renovation-recommendations', async (req, res) => {
+  const hfToken = process.env.token;
+  if (!hfToken) return res.status(503).json({ error: 'Hugging Face recommendations are not configured. Add the existing token environment variable on the server.' });
+  try {
+    const body = req.body || {};
+    const input: QwenRenovationInput = {
+      roomType: typeof body.roomType === 'string' ? body.roomType.trim().slice(0, 80) : '',
+      conditionAndRequirements: typeof body.conditionAndRequirements === 'string' ? body.conditionAndRequirements.trim().slice(0, 1500) : '',
+      style: typeof body.style === 'string' ? body.style.trim().slice(0, 60) : '',
+      budget: typeof body.budget === 'string' ? body.budget.trim().slice(0, 100) : '',
+      preferredColors: Array.isArray(body.preferredColors) ? body.preferredColors.filter((x: unknown) => typeof x === 'string').slice(0, 8).map((x: string) => x.slice(0, 40)) : [],
+      preferredMaterials: Array.isArray(body.preferredMaterials) ? body.preferredMaterials.filter((x: unknown) => typeof x === 'string').slice(0, 8).map((x: string) => x.slice(0, 60)) : [],
+      furniturePreferences: typeof body.furniturePreferences === 'string' ? body.furniturePreferences.trim().slice(0, 500) : '',
+      existingConstraints: Array.isArray(body.existingConstraints) ? body.existingConstraints.filter((x: unknown) => typeof x === 'string').slice(0, 20).map((x: string) => x.slice(0, 240)) : [],
+    };
+    if (!input.roomType || !input.style || !input.budget || !input.conditionAndRequirements) {
+      return res.status(400).json({ error: 'Room type, style, budget, and renovation requirements are required.' });
+    }
+    if (body.dimensions && typeof body.dimensions === 'object') {
+      const { width, length, height, area } = body.dimensions;
+      if ([width, length].every((v) => Number.isFinite(v) && v > 0 && v <= 50)) {
+        input.dimensions = { width, length, ...(Number.isFinite(height) && height > 0 && height <= 20 ? { height } : {}), ...(Number.isFinite(area) && area > 0 && area <= 2500 ? { area } : {}) };
+      }
+    }
+    if (Array.isArray(body.existingFurniture)) {
+      input.existingFurniture = body.existingFurniture.slice(0, 30).filter((item: any) => typeof item?.name === 'string' && typeof item?.category === 'string').map((item: any) => ({
+        name: item.name.slice(0, 100), category: item.category.slice(0, 60),
+        ...(Number.isFinite(item.width) && item.width > 0 && item.width <= 20 ? { width: item.width } : {}),
+        ...(Number.isFinite(item.depth) && item.depth > 0 && item.depth <= 20 ? { depth: item.depth } : {}),
+      }));
+    }
+    const model = process.env.HF_QWEN_MODEL || 'Qwen/Qwen3-4B-Instruct-2507';
+    const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${hfToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You are an interior renovation consultant. Follow the user constraints and return a valid JSON object only.' },
+          { role: 'user', content: createQwenRenovationPrompt(input) },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+        max_tokens: 1800,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      const status = response.status;
+      if (status === 401 || status === 403) return res.status(502).json({ error: 'Hugging Face rejected the server token. Check its inference permissions.' });
+      if (status === 429) return res.status(503).json({ error: 'Hugging Face is rate limiting requests. Please retry shortly.' });
+      if (status === 402) return res.status(503).json({ error: 'Hugging Face requires available Inference Provider credits or billing to run this model.' });
+      if (status === 404) return res.status(502).json({ error: `The configured Hugging Face model or provider is unavailable (${model}).` });
+      console.error('[INTERIO Qwen] Recommendation provider returned HTTP', status);
+      return res.status(502).json({ error: 'Hugging Face could not complete the renovation recommendation request.' });
+    }
+    const payload: any = await response.json();
+    const content = payload?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') throw new Error('Hugging Face returned an empty model response.');
+    let parsed: unknown;
+    try { parsed = JSON.parse(content); } catch { throw new Error('Hugging Face returned malformed JSON.'); }
+    return res.json(validateQwenRecommendations(parsed));
+  } catch (error: any) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return res.status(504).json({ error: 'Hugging Face renovation recommendations timed out. Please retry.' });
+    console.error('[INTERIO Qwen] Recommendation request failed:', error?.message || 'Unknown error');
+    return res.status(502).json({ error: error?.message || 'Could not prepare renovation recommendations.' });
   }
 });
 
@@ -4164,7 +4364,7 @@ Return STRICT JSON ONLY conforming to this format:
   }
 });
 
-function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string, preferredColors: string[] = [], requirements = '') {
+function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string, preferredColors: string[] = [], requirements = '', seed = 0) {
   const stylesMap: Record<string, { palette: any[]; philosophy: string; finishes: string }> = {
     modern: {
       philosophy: 'Crisp linear geometry, understated monolithic silhouettes, and balanced spatial tension allowing architectural features to breathe.',
@@ -4237,29 +4437,14 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
   const currentTheme = stylesMap[style] || stylesMap.modern;
   const namedColors: Record<string, string> = {
     sage: '#879477', 'sage green': '#879477', terracotta: '#b86f52', 'warm oak': '#bd9367', oak: '#bd9367', navy: '#34445b', cream: '#efe8dc', beige: '#d8cdbb', charcoal: '#414449', olive: '#777b53', blue: '#6d8fa5', blush: '#d6a6a2', walnut: '#73533d',
-    rust: '#a64b32', 'burnt orange': '#c65d32', forest: '#355e3b', 'forest green': '#355e3b', moss: '#66734f', 'moss green': '#66734f', clay: '#ad765e', sand: '#cbb994', taupe: '#8b8178', ivory: '#f3ead7', black: '#252525', white: '#f7f7f4', grey: '#898989', gray: '#898989', teal: '#3b8585', emerald: '#168568', mustard: '#d1a52c', burgundy: '#722f3e', lavender: '#a99ac6', chocolate: '#604331', bronze: '#8a633e', copper: '#b87333', stone: '#9b978e', oatmeal: '#d8cdbb', linen: '#e8dfcf', cedar: '#a8754d', bamboo: '#c4a35a',
   };
   const resolvedPreferences = preferredColors.map((value) => ({ value: value.trim().toLowerCase(), hex: /^#[0-9a-f]{6}$/i.test(value) ? value : namedColors[value.trim().toLowerCase()] })).filter((item) => item.hex);
-  const budgetAccent = /75|luxury/i.test(budget) ? '#B48A4A' : /35|60|high/i.test(budget) ? '#728277' : /(^|\D)(5,000|10,000)|essential/i.test(budget) ? '#9B9A92' : null;
-  const roomFlooring: Record<string, { hex: string; name: string }> = {
-    modern: { hex: '#C9C6BF', name: 'Honed Architectural Stone' }, minimal: { hex: '#D8D2C6', name: 'Warm Limestone' },
-    traditional: { hex: '#B6A58B', name: 'Classic Marble' }, industrial: { hex: '#68645E', name: 'Sealed Concrete' },
-    scandinavian: { hex: '#DED9CC', name: 'Pale Terrazzo' }, japandi: { hex: '#A69B89', name: 'Clay Terrazzo' },
-  };
-  const themePalette = currentTheme.palette.map((swatch: any) => {
-    if (/kitchen|bath|powder/i.test(roomType) && swatch.role === 'flooring') return { ...swatch, ...roomFlooring[style] };
-    if (swatch.role === 'accent' && budgetAccent) return { ...swatch, hex: budgetAccent };
-    return swatch;
-  });
-  const palette = themePalette.map((swatch: any) => {
+  const palette = currentTheme.palette.map((swatch: any) => {
     const match = resolvedPreferences.find(({ value }) => swatch.role === 'flooring' ? /oak|wood|timber|floor|bamboo|cedar|walnut/.test(value) : swatch.role === 'secondary' ? /cream|beige|linen|white|neutral|oatmeal/.test(value) : swatch.role === 'accent' ? !/oak|wood|timber|floor|bamboo|cedar|walnut|cream|beige|linen|white|neutral|oatmeal/.test(value) : false);
-    if (match) return { ...swatch, hex: match.hex };
-    const explicitHex = resolvedPreferences.filter(({ value }) => value.startsWith('#'));
-    const colorByRole = swatch.role === 'accent' ? explicitHex[0] : swatch.role === 'secondary' ? explicitHex[1] : undefined;
-    return colorByRole ? { ...swatch, hex: colorByRole.hex } : swatch;
+    return match ? { ...swatch, hex: match.hex } : swatch;
   });
 
-  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget);
+  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget, seed);
 
   return {
     roomWidth: w,
@@ -4268,38 +4453,13 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
     style,
     budget,
     designPhilosophy: currentTheme.philosophy,
-    materialFinishes: `${currentTheme.finishes} ${budgetFinish(budget)}`,
-    lightingSuggestions: styleLighting(style, roomType, budget),
+    materialFinishes: currentTheme.finishes,
+    lightingSuggestions: `Integrate a three-tier circadian lighting scheme: 1) Ambient illumination via indirect 2700K LED cove grazing across ceiling planes; 2) Focal statement luminaire placed at golden-ratio centroid; 3) Low-glare directional task downlights highlighting architectural artwork. Ensure all circuits support 0-10V flicker-free dimming.`,
     colorPalette: palette,
     furniture,
     preferredColors,
     additionalRequirements: requirements,
   };
-}
-
-function budgetFinish(budget: string) {
-  if (/75|luxury/i.test(budget)) return 'Specify bespoke joinery, artisan finishes and premium hardware.';
-  if (/35|60|high/i.test(budget)) return 'Use premium durable finishes and custom detailing at focal pieces.';
-  if (/(^|\D)(5,000|10,000)|essential/i.test(budget)) return 'Prioritize durable, attainable finishes and versatile essential pieces.';
-  return 'Balance lasting materials with carefully selected focal details.';
-}
-
-function styleLighting(style: string, roomType: string, budget: string) {
-  const roomTask = /kitchen/i.test(roomType) && /dining/i.test(roomType) ? 'continuous under-cabinet task light for the kitchen and a warm dimmable pendant centered over the dining table'
-    : /kitchen/i.test(roomType) ? 'continuous under-cabinet task light and bright, even worktop illumination'
-    : /study|office/i.test(roomType) ? 'glare-controlled desk task light and an even ambient layer'
-    : /dining/i.test(roomType) ? 'a warm dimmable pendant centered over the dining table and soft ambient fill'
-    : /bedroom/i.test(roomType) ? 'warm bedside reading lights with low-glare indirect ambient light'
-    : 'layered ambient light with focused task and reading light';
-  const styleLayer = ({
-    modern: 'Use clean recessed lines, concealed sources and restrained architectural accents.',
-    minimal: 'Keep fittings discreet, use concealed linear light and avoid visual clutter.',
-    traditional: 'Use warm brass or bronze fittings, shaded lamps and a graceful central fixture.',
-    industrial: 'Use blackened metal pendants, exposed fittings and directional task lamps.',
-    scandinavian: 'Use soft 2700K light, paper or opal diffusers and cozy pools of illumination.',
-    japandi: 'Use warm low-level light, natural shade materials and quiet wall grazing.',
-  } as Record<string, string>)[style] || 'Use warm, layered architectural lighting.';
-  return `${roomTask}. ${styleLayer} ${budgetFinish(budget)}`;
 }
 
 // ----------------------------------------------------
@@ -4326,4 +4486,4 @@ async function startServer() {
   });
 }
 
-if (!process.env.INTERIO_NO_LISTEN) startServer();
+startServer();
