@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { FurnitureItem } from '../types';
+import { MATERIAL_CATALOG } from '../components/FloorPlan3D/materialCatalog';
 
 type Palette = { role?: string; hex?: string; name?: string }[];
 
@@ -8,10 +9,17 @@ const geometryCache = new Map<string, THREE.BufferGeometry>();
 const materialCache = new Map<string, THREE.MeshStandardMaterial>();
 const woodTextureCache = new Map<string, THREE.CanvasTexture>();
 
+const MATERIAL_CACHE_LIMIT = 300;
+
 function material(color: THREE.ColorRepresentation, roughness = 0.72, metalness = 0, extra = '', wireframe = false) {
   const key = `${String(color)}:${roughness}:${metalness}:${extra}:${wireframe ? 'w' : 's'}`;
   let value = materialCache.get(key);
   if (!value) {
+    // Dragging a colour picker creates many one-off colours; forget the oldest
+    // entries (pieces already using them keep their material).
+    if (materialCache.size >= MATERIAL_CACHE_LIMIT) {
+      for (const oldest of [...materialCache.keys()].slice(0, MATERIAL_CACHE_LIMIT / 3)) materialCache.delete(oldest);
+    }
     value = new THREE.MeshStandardMaterial({ color, roughness, metalness, wireframe });
     materialCache.set(key, value);
   }
@@ -135,6 +143,26 @@ export function getWood(palette: Palette, style: string): string {
   return getWoodColor(palette, style);
 }
 
+/**
+ * Everything that changes how one piece looks, as a string. When it differs from
+ * the value stored on the 3D object the piece is re-created in place, without
+ * rebuilding the scene. (Models share cached materials, so recolouring means
+ * swapping the piece's model, never mutating a shared material.)
+ */
+export function furnitureAppearanceKey(item: FurnitureItem, palette: Palette, style: string) {
+  return `${item.color || ''}|${frameLook(item, palette, style).color}|${frameLook(item, palette, style).roughness}`;
+}
+
+/** Colour and roughness of a piece's wood/frame parts: its own frame colour, else its wood finish, else the palette wood. */
+function frameLook(item: FurnitureItem, palette: Palette, style: string) {
+  const variant = item.finishId ? MATERIAL_CATALOG.find((entry) => entry.id === item.finishId) : undefined;
+  return {
+    color: item.frameColor || variant?.color || getWood(palette, style),
+    roughness: variant?.roughness ?? 0.52,
+    custom: Boolean(item.frameColor || variant),
+  };
+}
+
 export function createFurnitureModel(
   item: FurnitureItem,
   palette: Palette,
@@ -149,15 +177,18 @@ export function createFurnitureModel(
   const accent = getFabricColor(palette, style, item.color);
   const fabric = material(accent, 0.91);
   const lightFabric = material('#eee7dc', 0.94);
-  const woodColor = getWoodColor(palette, style);
-  const wood = material(woodColor, 0.52);
-  const darkWood = material('#483a2c', 0.48);
+  const frame = frameLook(item, palette, style);
+  const wood = material(frame.color, frame.roughness, 0, '', wireframe);
+  // Legs and trim are a shade darker than the main wood; a chosen frame colour darkens with them.
+  const darkWood = frame.custom ? material(`#${new THREE.Color(frame.color).multiplyScalar(0.78).getHexString()}`, frame.roughness, 0, '', wireframe) : material('#483a2c', 0.48, 0, '', wireframe);
   const metal = material('#403d39', 0.32, 0.68);
   const black = material('#262522', 0.42);
   const round = (size: [number, number, number], pos: [number, number, number], mat: THREE.Material, r = 0.035) => addBox(group, size, pos, mat, r);
   const legs = (legW: number, legD: number, legH: number, y: number, mat: THREE.Material) => {
-    for (const x of [-w / 2 + legW, w / 2 - legW]) for (const z of [-d / 2 + legD, d / 2 - legD]) {
-      addCylinder(group, legW * 0.78, legW, legH, [x, y, z], mat, 10);
+    // Keep the whole leg (radius legW) inside the footprint, front and back as well as sideways.
+    const inset = Math.max(legW, legD);
+    for (const x of [-w / 2 + inset, w / 2 - inset]) for (const z of [-d / 2 + inset, d / 2 - inset]) {
+      addCylinder(group, legW, legW * 0.72, legH, [x, y, z], mat, 10);
     }
   };
 
@@ -214,6 +245,45 @@ export function createFurnitureModel(
       burner.rotation.x = Math.PI / 2;
       burner.position.set(x, cabinetH + 0.064, z);
       group.add(burner);
+    }
+  } else if (item.category === 'seating' && /stool/.test(name)) {
+    const r = Math.min(w, d) / 2;
+    const seatY = Math.min(h, 0.55);
+    addCylinder(group, r * 0.92, r * 0.92, 0.06, [0, seatY - 0.03, 0], fabric, 24);
+    addCylinder(group, r * 0.9, r * 0.9, 0.025, [0, seatY - 0.075, 0], wood, 24);
+    for (let i = 0; i < 4; i++) {
+      const a = (Math.PI / 2) * i + Math.PI / 4;
+      const leg = addCylinder(group, 0.022, 0.016, seatY - 0.08, [Math.cos(a) * r * 0.62, (seatY - 0.08) / 2, Math.sin(a) * r * 0.62], wood, 8);
+      leg.rotation.z = -Math.cos(a) * 0.1;
+      leg.rotation.x = Math.sin(a) * 0.1;
+    }
+    addCylinder(group, r * 0.55, r * 0.55, 0.012, [0, seatY * 0.4, 0], wood, 20);
+  } else if (item.category === 'seating' && /ottoman|pouf|footstool/.test(name)) {
+    const bodyH = Math.min(h, 0.42);
+    const legH = 0.07;
+    round([w * 0.96, bodyH - legH - 0.03, d * 0.96], [0, legH + (bodyH - legH - 0.03) / 2, 0], fabric, 0.08);
+    round([w * 0.9, 0.05, d * 0.9], [0, bodyH - 0.025, 0], lightFabric, 0.05);
+    for (const x of [-w * 0.36, w * 0.36]) for (const z of [-d * 0.36, d * 0.36]) addCylinder(group, 0.025, 0.018, legH, [x, legH / 2, z], wood, 8);
+  } else if (item.category === 'seating' && /dining chair|side chair/.test(name)) {
+    const seatY = Math.min(0.46, h * 0.52);
+    const post = 0.022;
+    round([w * 0.96, 0.055, d * 0.9], [0, seatY, d * 0.04], fabric, 0.02);
+    for (const x of [-w / 2 + post * 1.5, w / 2 - post * 1.5]) {
+      addCylinder(group, post, post * 0.7, seatY - 0.03, [x, (seatY - 0.03) / 2, d / 2 - post * 2], wood, 8);
+      addCylinder(group, post, post * 0.7, h, [x, h / 2, -d / 2 + post * 2], wood, 8);
+    }
+    round([w * 0.9, 0.05, 0.03], [0, h - 0.04, -d / 2 + post * 2], wood, 0.012);
+    for (const y of [seatY + 0.12, seatY + 0.24]) if (y < h - 0.1) round([w * 0.84, 0.045, 0.02], [0, y, -d / 2 + post * 2], wood, 0.01);
+  } else if (item.category === 'seating' && /desk chair|office chair/.test(name)) {
+    const seatY = Math.min(0.5, h * 0.52);
+    round([w * 0.88, 0.09, d * 0.82], [0, seatY, 0.02], fabric, 0.04);
+    round([w * 0.8, Math.min(0.5, h * 0.5), 0.07], [0, seatY + 0.3, -d * 0.38], fabric, 0.04);
+    addCylinder(group, 0.025, 0.03, seatY - 0.1, [0, (seatY - 0.1) / 2 + 0.06, 0], metal, 10);
+    for (let i = 0; i < 5; i++) {
+      const a = (Math.PI * 2 * i) / 5;
+      const spoke = addBox(group, [Math.min(w, d) * 0.46, 0.03, 0.04], [Math.cos(a) * Math.min(w, d) * 0.23, 0.06, Math.sin(a) * Math.min(w, d) * 0.23], metal, 0.01);
+      spoke.rotation.y = -a;
+      addCylinder(group, 0.025, 0.025, 0.05, [Math.cos(a) * Math.min(w, d) * 0.45, 0.025, Math.sin(a) * Math.min(w, d) * 0.45], black, 8);
     }
   } else if (item.category === 'seating') {
     const isDiningOrTaskChair = /dining.*chair|chair.*dining|task chair|desk chair|study chair/.test(name);
@@ -275,6 +345,8 @@ export function createFurnitureModel(
     } else {
       const legH = Math.max(0.18, topY - topT);
       legs(Math.min(0.045, w * 0.04), Math.min(0.045, d * 0.06), legH, legH / 2, darkWood);
+      // A slim apron under the top ties the legs together and reads as real joinery.
+      if (legH > 0.3) round([w * 0.9, 0.06, d * 0.88], [0, topY - topT / 2 - 0.035, 0], darkWood, 0.01);
     }
     if (/desk/.test(name)) {
       round([w * 0.42, topY * 0.46, d * 0.12], [w * 0.24, topY * 0.48, -d * 0.34], wood, 0.025);
@@ -291,9 +363,24 @@ export function createFurnitureModel(
         round([panelW, cabinetH * 0.72, 0.025], [-w * 0.31 + i * w * 0.31, baseY, d * 0.45], darkWood, 0.012);
         addCylinder(group, 0.012, 0.012, 0.05, [-w * 0.31 + i * w * 0.31, baseY, d * 0.47], metal, 8).rotation.x = Math.PI / 2;
       }
+    } else if (tall && /wardrobe/.test(name)) {
+      // Two panelled doors with a centre gap and long handles.
+      const doorW = w * 0.46;
+      for (const side of [-1, 1]) {
+        round([doorW, cabinetH * 0.92, 0.022], [side * (doorW / 2 + 0.006), baseY, d * 0.45], darkWood, 0.012);
+        round([doorW * 0.72, cabinetH * 0.74, 0.012], [side * (doorW / 2 + 0.006), baseY, d * 0.462], wood, 0.01);
+        round([0.018, Math.min(0.5, cabinetH * 0.22), 0.03], [side * 0.05, baseY, d * 0.48], metal, 0.008);
+      }
     } else if (tall) {
       for (let y = 1; y <= 4; y++) round([w * 0.9, 0.025, d * 0.84], [0, cabinetH * y / 5, 0], darkWood, 0.008);
-      if (/wardrobe/.test(name)) round([0.018, cabinetH * 0.9, 0.025], [0, baseY, d * 0.46], darkWood, 0.01);
+    } else if (/nightstand|bedside|dresser|drawers/.test(name)) {
+      const rows = /dresser|drawers/.test(name) ? 3 : 2;
+      const rowH = (cabinetH * 0.86) / rows;
+      for (let i = 0; i < rows; i++) {
+        const y = cabinetH * 0.07 + rowH * (i + 0.5);
+        round([w * 0.88, rowH - 0.02, 0.022], [0, y, d * 0.45], darkWood, 0.01);
+        addCylinder(group, 0.014, 0.014, 0.03, [0, y, d * 0.475], metal, 8).rotation.x = Math.PI / 2;
+      }
     } else {
       for (const x of [-w * 0.24, w * 0.24]) addCylinder(group, 0.015, 0.015, 0.06, [x, baseY, d * 0.47], metal, 8).rotation.x = Math.PI / 2;
     }
@@ -308,7 +395,7 @@ export function createFurnitureModel(
     shade.position.y = totalH * 0.83;
     group.add(shade);
     group.userData.lamp = true;
-  } else if (item.category === 'decor' || /rug/.test(name)) {
+  } else if ((item.category === 'decor' && !/plant|tree/.test(name)) || /rug/.test(name)) {
     const colors = ['#d9cbb7', '#b9aa94', '#e8ded0'];
     const rugMat = material(item.color || colors[style.toLowerCase().includes('minimal') ? 0 : 1], 0.98);
     const rug = mesh(new THREE.PlaneGeometry(w, d), rugMat, false);
@@ -319,20 +406,41 @@ export function createFurnitureModel(
     for (const z of [-d / 2 + 0.04, d / 2 - 0.04]) round([w * 0.92, 0.008, 0.012], [0, 0.018, z], border, 0.003);
   } else if (/bed/.test(name)) {
     group.userData.fixtureKind = 'bed';
-    const frameH = 0.24;
-    round([w, frameH, d], [0, frameH / 2, 0], darkWood, 0.035);
-    round([w * 0.96, 0.2, d * 0.91], [0, frameH + 0.1, 0], lightFabric, 0.075);
-    round([w, Math.min(1.15, h * 0.48), 0.12], [0, Math.min(0.78, h * 0.3), -d / 2 + 0.055], wood, 0.045);
-    for (const x of [-w * 0.22, w * 0.22]) round([w * 0.28, 0.11, d * 0.2], [x, frameH + 0.255, -d * 0.32], fabric, 0.05);
-    legs(0.045, 0.045, 0.12, 0.06, darkWood);
+    const plinthH = 0.2;
+    const mattressH = 0.22;
+    const topY = plinthH + mattressH;
+    round([w * 0.99, plinthH, d * 0.99], [0, plinthH / 2 + 0.04, 0], darkWood, 0.03);
+    legs(0.04, 0.04, 0.05, 0.025, darkWood);
+    round([w * 0.95, mattressH, d * 0.9], [0, plinthH + 0.04 + mattressH / 2, d * 0.02], lightFabric, 0.07);
+    // Duvet over the lower two thirds, with a folded-back edge towards the pillows.
+    const duvetD = d * 0.64;
+    const duvetZ = d * 0.02 + d * 0.9 / 2 - duvetD / 2;
+    round([w * 0.97, 0.08, duvetD], [0, topY + 0.04 + 0.04, duvetZ], fabric, 0.05);
+    round([w * 0.97, 0.1, 0.16], [0, topY + 0.04 + 0.05, duvetZ - duvetD / 2 + 0.08], lightFabric, 0.05);
+    const pillows = w > 1.2 ? 2 : 1;
+    const pillowW = (w * 0.86) / pillows;
+    for (let i = 0; i < pillows; i++) {
+      round([pillowW * 0.9, 0.13, d * 0.17], [-w * 0.43 + pillowW * (i + 0.5), topY + 0.04 + 0.08, -d / 2 + d * 0.17], lightFabric, 0.06);
+    }
+    const headH = Math.min(1.15, Math.max(0.7, h * 0.7));
+    round([w, headH, 0.09], [0, headH / 2 + 0.04, -d / 2 + 0.045], wood, 0.035);
+    round([w * 0.88, headH * 0.58, 0.04], [0, plinthH + 0.04 + headH * 0.42, -d / 2 + 0.105], fabric, 0.04);
   } else if (/tv|television|monitor/.test(name)) {
     round([w, Math.max(0.055, h * 0.7), 0.07], [0, h * 0.5, 0], black, 0.02);
     const screen = new THREE.MeshStandardMaterial({ color: '#3d5158', roughness: 0.16, metalness: 0.25, emissive: '#1b2d33', emissiveIntensity: 0.12, wireframe });
     round([w * 0.94, Math.max(0.02, h * 0.59), 0.012], [0, h * 0.5, 0.042], screen, 0.01);
     addCylinder(group, 0.012, 0.012, 0.18, [0, h * 0.14, 0], metal, 8);
   } else {
-    round([w * 0.95, Math.min(h, 0.72), d * 0.9], [0, Math.min(h, 0.72) / 2, 0], wood, 0.025);
-    if (/plant|tree/.test(name)) addPlant(group, w, h, d);
+    if (/plant|tree/.test(name)) {
+      // Build the plant, then squeeze it horizontally if its leaves spread past the declared footprint.
+      const plant = new THREE.Group();
+      addPlant(plant, w, h, d);
+      group.add(plant);
+      const size = new THREE.Box3().setFromObject(plant).getSize(new THREE.Vector3());
+      const fit = Math.min(1, w / Math.max(size.x, 1e-6), d / Math.max(size.z, 1e-6));
+      plant.scale.set(fit, 1, fit);
+    }
+    else round([w * 0.95, Math.min(h, 0.72), d * 0.9], [0, Math.min(h, 0.72) / 2, 0], wood, 0.025);
   }
 
   group.traverse((part) => {

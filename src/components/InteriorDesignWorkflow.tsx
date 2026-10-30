@@ -334,7 +334,6 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   const [roomType, setRoomType] = useState<string>(initialResult?.roomType ?? 'Living Room');
   const [style, setStyle] = useState<DesignStyle>(initialResult?.style || initialStyle || 'japandi');
   const [budget, setBudget] = useState<string>('$15,000 - $25,000');
-  const [preferredColors, setPreferredColors] = useState('');
   const [additionalRequirements, setAdditionalRequirements] = useState('');
   const [phaseOneJson, setPhaseOneJson] = useState('');
   const [variationSeed, setVariationSeed] = useState<number>(0);
@@ -431,7 +430,6 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
           style,
           budget,
           roomType,
-          preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean),
           additionalRequirements,
           openings,
           variationSeed: nextSeed,
@@ -450,7 +448,6 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
         style,
         budget,
         roomType,
-        preferredColors: preferredColors.split(',').map((value) => value.trim()).filter(Boolean),
         additionalRequirements,
         openings,
         variationSeed: nextSeed,
@@ -579,10 +576,6 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="text-[11px] text-stone-500 block mb-1" htmlFor="interior-colors">Preferred colors</label>
-                <input id="interior-colors" value={preferredColors} onChange={(e) => { setPreferredColors(e.target.value); invalidateResult(); }} placeholder="e.g. sage green, warm oak" className="w-full px-3 py-2 border border-stone-200 rounded-lg text-xs" />
-              </div>
               <div>
                 <label className="text-[11px] text-stone-500 block mb-1" htmlFor="interior-requirements">Additional requirements</label>
                 <textarea id="interior-requirements" value={additionalRequirements} onChange={(e) => { setAdditionalRequirements(e.target.value); invalidateResult(); }} maxLength={1000} rows={2} placeholder="Accessibility, existing furniture, pets..." className="w-full px-3 py-2 border border-stone-200 rounded-lg text-xs resize-y" />
@@ -826,6 +819,10 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
 
           {result?.layoutWarnings?.map((warning, index) => (
             <div key={index} role="status" className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">{warning}</div>
+          ))}
+
+          {result?.inputNotes?.map((note, index) => (
+            <div key={index} role="note" className="bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-xs text-stone-700">{note}</div>
           ))}
 
           {/* Curated Furniture Cards */}

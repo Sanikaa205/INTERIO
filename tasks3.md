@@ -149,7 +149,6 @@ POST /api/gemini/interior   — server.ts:448-664
 - No generated layout blocks a door swing or covers a window with a tall piece; all pieces reachable.
 - `npm test` / `npm run lint` pass; API response remains accepted by `generateInteriorApi`'s existing consistency checks (`api.ts:223-229`).
 
----
 
 ## Phase 3 — Improve 3D realism
 

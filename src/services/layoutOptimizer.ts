@@ -49,11 +49,11 @@ export function furnitureFootprint(item: Pick<FurnitureItem, 'x' | 'y' | 'width'
   return { x: item.x, y: item.y, width: rotated ? item.depth : item.width, depth: rotated ? item.width : item.depth };
 }
 
-function rectanglesOverlap(a: { x: number; y: number; width: number; depth: number }, b: { x: number; y: number; width: number; depth: number }) {
+export function rectanglesOverlap(a: { x: number; y: number; width: number; depth: number }, b: { x: number; y: number; width: number; depth: number }) {
   return a.x < b.x + b.width - 1e-6 && a.x + a.width > b.x + 1e-6 && a.y < b.y + b.depth - 1e-6 && a.y + a.depth > b.y + 1e-6;
 }
 
-function hitsOpening(item: { x: number; y: number; width: number; depth: number }, room: LayoutRoom) {
+export function hitsOpening(item: { x: number; y: number; width: number; depth: number }, room: LayoutRoom) {
   return (room.openings || []).some((opening) => {
     const openingClearance = opening.type === 'door' ? room.doorClearance ?? CLEARANCE : 0.3;
     const spanStart = opening.wall === 'north' || opening.wall === 'south' ? item.x : item.y;

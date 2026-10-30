@@ -244,3 +244,33 @@ test('every catalogued local furniture asset exists as a GLB 2.0 file', () => {
     assert.equal(bytes.readUInt32LE(8), bytes.length);
   }
 });
+
+test('user colours reach the pieces by role, and no colours leaves the style palette untouched', async () => {
+  const { derivePalette } = await import('./colorTheory');
+  const { resolveColor } = await import('./colorResolver');
+  const palette = [
+    { hex: '#1E293B', name: 'p', role: 'primary' as const }, { hex: '#F8FAFC', name: 'w', role: 'wall' as const },
+    { hex: '#6366F1', name: 'a', role: 'accent' as const }, { hex: '#94A3B8', name: 's', role: 'secondary' as const },
+    { hex: '#C2A382', name: 'f', role: 'flooring' as const },
+  ];
+  const plain = createRoomFurnitureSuggestions('Bedroom', 4, 4, 'modern', palette);
+  assert.equal(plain.find((p) => p.id === 'bed')?.color, '#94A3B8');
+  const pink = resolveColor('pink').hex;
+  const derived = derivePalette([pink]);
+  const pieces = createRoomFurnitureSuggestions('Bedroom', 4, 4, 'modern', palette, '', '', 0, { derived });
+  assert.equal(pieces.find((p) => p.id === 'bed')?.color, pink);
+  assert.equal(pieces.find((p) => p.id === 'bed')?.colorRole, 'hero');
+  assert.match(pieces.find((p) => p.id === 'bed')?.material || '', /pink-toned/i);
+  assert.equal(pieces.find((p) => p.id === 'wardrobe')?.colorRole, 'wood');
+  assert.notEqual(pieces.find((p) => p.id === 'bedroom-rug')?.color, '#94A3B8');
+});
+
+test('5.3 input notes render under the result without touching the drawing', () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'src/components/InteriorDesignWorkflow.tsx'), 'utf8');
+  assert.match(src, /result\?\.inputNotes\?\.map/);
+});
+
+test('0.1 the generator form has no preferred-colours input and sends none', () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'src/components/InteriorDesignWorkflow.tsx'), 'utf8');
+  assert.doesNotMatch(src, /ColorChips|preferredColors|interior-colors|Preferred colors/);
+});

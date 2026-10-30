@@ -115,6 +115,14 @@ export interface FloorPlanFinishes {
   wallFaces?: Record<string, Record<string, SurfaceFinish>>;
 }
 
+export type InteriorWallSide = 'north' | 'south' | 'east' | 'west';
+
+/** Finishes a user applies in the interior 3D editor. `walls.all` applies to every wall without its own entry. */
+export interface InteriorFinishes {
+  floor?: SurfaceFinish;
+  walls?: { all?: SurfaceFinish } & Partial<Record<InteriorWallSide, SurfaceFinish>>;
+}
+
 export interface FloorPlanResult {
   plotWidth: number; // meters
   plotLength: number; // meters
@@ -160,6 +168,9 @@ export type FurnitureCategory =
   | 'fixture'
   | 'electronics';
 
+/** Which palette tone a piece takes: hero = lead colour, soft = tint, wood = timber/floor tone, accent, neutral = dark metals. */
+export type FurnitureColorRole = 'hero' | 'soft' | 'wood' | 'accent' | 'neutral';
+
 export interface FurnitureItem {
   id: string;
   name: string;
@@ -174,6 +185,7 @@ export interface FurnitureItem {
   rotation?: number; // degrees (0, 90, 180, 270)
   material?: string;
   color?: string;
+  colorRole?: FurnitureColorRole;
   notes?: string;
   estimatedPrice?: string;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
@@ -181,6 +193,12 @@ export interface FurnitureItem {
   clearance?: number;
   assetId?: string;
   assetUrl?: string;
+  /** Wood/frame parts colour (legs, frames); `color` colours the body/upholstery. */
+  frameColor?: string;
+  /** Catalogue variant id for the wood/frame parts. */
+  finishId?: string;
+  /** The body colour the generator chose, kept so "reset" can restore it. */
+  generatedColor?: string;
 }
 
 export interface ColorSwatch {
@@ -205,6 +223,10 @@ export interface InteriorDesignResult {
   additionalRequirements?: string;
   preferredColors?: string[];
   layoutWarnings?: string[];
+  /** How inputs were interpreted or could not be honoured (e.g. an unrecognised colour, accessibility adjustments). */
+  inputNotes?: string[];
+  /** Indicative cost range of the placed furniture for the chosen budget tier. */
+  estimatedTotal?: string;
   openings?: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
   generation?: {
     source: 'ai' | 'algorithmic' | 'fallback';
@@ -213,7 +235,12 @@ export interface InteriorDesignResult {
     aiFallbackReason?: string;
   };
   variationSeed?: number;
-  finishes?: { floor?: string; wall?: string };
+  /** The style's default finish names (text), set by the generator. Not the editable finishes below. */
+  styleFinishes?: { floor?: string; wall?: string };
+  /** Floor/wall finishes edited in the 3D editor. Absent until the user edits something. */
+  finishes?: InteriorFinishes;
+  /** The generator's wall and floor swatch colours, kept so "reset" can restore them. */
+  generatedSwatches?: { wall?: string; flooring?: string };
 }
 
 // Workflow 3: Existing House Reconstruction Types

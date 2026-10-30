@@ -3,8 +3,27 @@ import * as THREE from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { createFloorMaterial, createFurnitureModel, addStyledDecor } from '../three/interiorVisuals';
-import { defaultRoomOpenings, furnitureFootprint } from '../services/layoutOptimizer';
+import { createFloorMaterial, createFurnitureModel, addStyledDecor, furnitureAppearanceKey } from '../three/interiorVisuals';
+import { buildInteriorShell, createInteriorFloor, createSurfaceHighlight, createSurfaceMaterial, createFloorFinishMaterial, isSurfaceId, type SurfaceId, type WallSide } from '../three/interiorShell';
+import { getMaterialVariant } from './FloorPlan3D/materialCatalog';
+import { resolveWallFinish, type WallScope } from '../services/interiorFinishes';
+import { InteriorDesignPanel, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, type PanelTab } from './InteriorEditor/InteriorDesignPanel';
+import { interiorSceneKey, resolveInteriorOpenings } from '../three/interiorSceneKey';
+import { furnitureFootprint, hitsOpening } from '../services/layoutOptimizer';
+import { getCatalogPiece } from '../services/furnitureCatalog';
+import { furnitureTransform3D, rotationFromRadians } from '../three/furnitureTransform3D';
+import { createCachedGlbLoader, loadFurnitureModel } from '../three/glbFurniture';
+import { findRealModel } from '../services/furnitureModels';
+import {
+  createContactShadow,
+  defaultQuality,
+  disposeContactShadow,
+  qualitySettings,
+  shadowFrustum,
+  sunPosition,
+  type RenderQuality,
+} from '../three/interiorRealism';
+import { createCatalogItem, createDuplicate } from '../services/furniturePlacement';
 import {
   FloorPlanResult,
   FurnitureItem,
@@ -29,6 +48,7 @@ import {
   Move,
   RotateCw,
   X,
+  Paintbrush,
 } from 'lucide-react';
 
 interface Shared3DViewProps {
@@ -41,7 +61,13 @@ interface Shared3DViewProps {
   selectedFurnitureId?: string | null;
   onSelectFurniture?: (id: string | null) => void;
   onFurnitureChange?: (furniture: FurnitureItem[]) => void;
+  /** Whole-result edits (finishes, palette) from the interior editor. */
+  onInteriorChange?: (next: InteriorDesignResult) => void;
 }
+
+const WALL_SIDE_LIST: WallSide[] = ['north', 'south', 'east', 'west'];
+// One shared loader, so each bundled model is downloaded and parsed once per session.
+const glbLoader = createCachedGlbLoader(new GLTFLoader());
 
 export const Shared3DView: React.FC<Shared3DViewProps> = ({
   data,
@@ -53,6 +79,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   selectedFurnitureId = null,
   onSelectFurniture,
   onFurnitureChange,
+  onInteriorChange,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -84,6 +111,47 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   const targetLookAt = useRef(new THREE.Vector3(0, 0, 0));
   const shellWallMaterialsRef = useRef<Array<{ normal: THREE.Vector3; material: THREE.MeshStandardMaterial }>>([]);
 
+  // Interior editing: the live floor mesh and wall materials are kept so an
+  // edit updates them in place instead of rebuilding the whole scene.
+  const floorMeshRef = useRef<THREE.Mesh | null>(null);
+  // Which look the floor/each wall currently has ('palette:<hex>' or 'finish:<json>'), so a sync only touches what changed.
+  const floorColorRef = useRef<string | null>(null);
+  const wallKeysRef = useRef<Partial<Record<WallSide, string>>>({});
+  // Materials created for finishes; they are ours to dispose when replaced.
+  const ownedMaterialsRef = useRef<Set<THREE.Material>>(new Set());
+  const wallMaterialsRef = useRef<Partial<Record<WallSide, THREE.MeshStandardMaterial>>>({});
+  const roomShapeRef = useRef({ width: 0, depth: 0, height: 0, thickness: 0.2 });
+  const highlightRef = useRef<THREE.Object3D | null>(null);
+  const [selectedSurface, setSelectedSurface] = useState<SurfaceId | null>(null);
+
+  // Design sidebar (interior projects only).
+  const PANEL_WIDTH_KEY = 'interio:interior-panel-width';
+  const [isSmall, setIsSmall] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+  const [panelOpen, setPanelOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 768);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
+      if (Number.isFinite(saved) && saved >= PANEL_MIN_WIDTH && saved <= PANEL_MAX_WIDTH) return saved;
+    } catch { /* storage unavailable: use the default */ }
+    return 360;
+  });
+  const QUALITY_KEY = 'interio:render-quality';
+  const [quality, setQuality] = useState<RenderQuality>(() => {
+    try {
+      const saved = window.localStorage.getItem(QUALITY_KEY);
+      if (saved === 'high' || saved === 'balanced') return saved;
+    } catch { /* storage unavailable: pick by device */ }
+    return defaultQuality(window.innerWidth, navigator.hardwareConcurrency);
+  });
+  const [panelTab, setPanelTab] = useState<PanelTab>('floor');
+  const [wallScope, setWallScope] = useState<WallScope>('all');
+  const selectedSurfaceRef = useRef(selectedSurface);
+  selectedSurfaceRef.current = selectedSurface;
+  // Camera is only re-fitted when the room itself changes, not on every rebuild.
+  const cameraFitKeyRef = useRef('');
+  // Dev aid: how many times the scene was built from scratch (see data-scene-builds).
+  const sceneBuildCount = useRef(0);
+
   // The 4 room walls, each a solid Group (wall body + its window/door/trim
   // detailing) so they can be shown/hidden together. All 4 are always
   // built as real solid geometry; whichever one currently sits between the
@@ -103,8 +171,12 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // once per scene rebuild) never call a stale closure.
   const onFurnitureChangeRef = useRef(onFurnitureChange);
   const onSelectFurnitureRef = useRef(onSelectFurniture);
+  const selectedFurnitureIdRef = useRef(selectedFurnitureId);
   onFurnitureChangeRef.current = onFurnitureChange;
   onSelectFurnitureRef.current = onSelectFurniture;
+  const onInteriorChangeRef = useRef(onInteriorChange);
+  onInteriorChangeRef.current = onInteriorChange;
+  selectedFurnitureIdRef.current = selectedFurnitureId;
 
   // Determine active data payload
   const floorPlanData = projectType === 'floorplan' ? (data as FloorPlanResult) : null;
@@ -131,9 +203,17 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       ? (data as ReconstructionData).cornerPoints
       : null;
 
+  // Interior projects rebuild the scene only when the geometry changes (room,
+  // openings, furniture list). Colour and position edits are applied in place
+  // by the sync effect below. Other project types keep rebuilding on any data change.
+  const sceneDependency: unknown = projectType === 'interior' ? interiorSceneKey(interiorData) : data;
+
   // Initialize Three.js scene
   useEffect(() => {
     if (!mountRef.current) return;
+    sceneBuildCount.current += 1;
+    mountRef.current.dataset.sceneBuilds = String(sceneBuildCount.current);
+    highlightRef.current = null;
 
     const width = mountRef.current.clientWidth || 800;
     const height = mountRef.current.clientHeight || 600;
@@ -156,16 +236,20 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     rendererRef.current = renderer;
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const isInterior = projectType === 'interior';
+    const settings = qualitySettings(quality, window.devicePixelRatio, renderer.capabilities.getMaxAnisotropy());
+    renderer.setPixelRatio(isInterior ? settings.pixelRatio : Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.98;
+    renderer.toneMappingExposure = isInterior ? (lightingMode === 'day' ? 1.05 : 0.9) : 0.98;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const pmrem = new THREE.PMREMGenerator(renderer);
     const roomEnvironment = new RoomEnvironment();
     const environmentTarget = pmrem.fromScene(roomEnvironment, 0.04);
     scene.environment = environmentTarget.texture;
+    // The bundled room environment is bright; dial it down so the real lights and shadows carry the look.
+    if (isInterior) scene.environmentIntensity = lightingMode === 'day' ? 0.55 : 0.22;
     pmrem.dispose();
     roomEnvironment.dispose();
 
@@ -206,8 +290,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       const list = furnitureDataRef.current;
       const idx = list.findIndex((f) => f.id === furnitureId);
       if (idx === -1) return;
-      const rotationDeg = THREE.MathUtils.radToDeg(object.rotation.y);
-      list[idx].rotation = ((rotationDeg % 360) + 360) % 360;
+      list[idx].rotation = rotationFromRadians(object.rotation.y);
     };
     transformControls.addEventListener('dragging-changed', handleDraggingChanged);
     transformControls.addEventListener('objectChange', handleObjectChange);
@@ -218,6 +301,8 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     // Re-attach the gizmo to whichever furniture is currently selected
     // (the scene/objects were just rebuilt, so prior object references are gone).
     syncTransformSelection();
+    syncSurfaceHighlight();
+    if (projectType === 'interior') syncInteriorAppearance(scene);
 
     // Setup Lighting
     setupLighting(scene);
@@ -251,13 +336,22 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       transformControls.removeEventListener('objectChange', handleObjectChange);
       transformControls.dispose();
       environmentTarget.dispose();
+      ownedMaterialsRef.current.forEach((material) => material.dispose());
+      ownedMaterialsRef.current.clear();
       transformControlsRef.current = null;
       if (rendererRef.current?.domElement && mountRef.current) {
         mountRef.current.innerHTML = '';
       }
       renderer.dispose();
     };
-  }, [data, projectType, wallHeight, lightingMode, showWireframe, showGrid, shellView]);
+  }, [sceneDependency, projectType, wallHeight, lightingMode, showWireframe, showGrid, shellView, quality]);
+
+  // Apply interior colour and position edits to the existing scene. Runs after
+  // the build effect, so right after a rebuild it finds everything in sync.
+  useEffect(() => {
+    if (projectType !== 'interior' || !interiorData || !sceneRef.current) return;
+    syncInteriorAppearance(sceneRef.current);
+  }, [data]);
 
   // Re-sync the gizmo when selection changes without a full scene rebuild
   // (e.g. the user picked a different item in the 2D preview before
@@ -265,6 +359,11 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   useEffect(() => {
     syncTransformSelection();
   }, [selectedFurnitureId]);
+
+  // Selected floor/wall outline (never tints the real material).
+  useEffect(() => {
+    syncSurfaceHighlight();
+  }, [selectedSurface]);
 
   // Switch translate/rotate mode on the live TransformControls instance.
   useEffect(() => {
@@ -283,10 +382,132 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // Escape deselects the current furniture piece.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onSelectFurnitureRef.current?.(null);
+      if (e.key === 'Escape') {
+        onSelectFurnitureRef.current?.(null);
+        setSelectedSurface(null);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setIsSmall(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(QUALITY_KEY, quality); } catch { /* not persisted */ }
+  }, [quality]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidth)); } catch { /* not persisted */ }
+  }, [panelWidth]);
+
+  // Picking something in 3D jumps the sidebar to the matching tab (and wall).
+  useEffect(() => {
+    if (!selectedSurface) return;
+    if (selectedSurface === 'floor') setPanelTab('floor');
+    else {
+      setPanelTab('walls');
+      setWallScope(selectedSurface.slice(5) as WallScope);
+    }
+    setPanelOpen(true);
+  }, [selectedSurface]);
+
+  useEffect(() => {
+    if (selectedFurnitureId && projectType === 'interior') {
+      setPanelTab('furniture');
+      setSelectedSurface(null);
+    }
+  }, [selectedFurnitureId]);
+
+  // Short messages (warnings, "Undo delete"). Kept in a ref-backed timer so
+  // scene listeners created once per build can still raise them.
+  const [toast, setToast] = useState<{ message: string; tone: 'info' | 'warn'; action?: { label: string; run: () => void } } | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const showToast = (message: string, tone: 'info' | 'warn' = 'info', action?: { label: string; run: () => void }) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    setToast({ message, tone, action });
+    toastTimer.current = window.setTimeout(() => setToast(null), action ? 8000 : 4000);
+  };
+  useEffect(() => () => { if (toastTimer.current !== null) window.clearTimeout(toastTimer.current); }, []);
+
+  // Add / duplicate / delete pieces. These always read the latest design through a ref.
+  const latestInterior = useRef<InteriorDesignResult | null>(null);
+  latestInterior.current = projectType === 'interior' ? (interiorData as InteriorDesignResult | null) : null;
+
+  const addFurniture = (catalogId: string) => {
+    const design = latestInterior.current;
+    const piece = getCatalogPiece(catalogId);
+    if (!design || !piece) return;
+    const added = createCatalogItem(design, piece);
+    if (!added) {
+      showToast(`No free space for a ${piece.name.toLowerCase()}. Move or remove something first.`, 'warn');
+      return;
+    }
+    onFurnitureChangeRef.current?.([...design.furniture, added.item]);
+    onSelectFurnitureRef.current?.(added.item.id);
+    showToast(added.tight ? `Added ${piece.name} in a tight spot.` : `Added ${piece.name}.`);
+  };
+
+  const duplicateFurniture = (id: string) => {
+    const design = latestInterior.current;
+    const source = design?.furniture.find((f) => f.id === id);
+    if (!design || !source) return;
+    const copy = createDuplicate(design, source);
+    if (!copy) {
+      showToast(`No free space for another ${source.name.toLowerCase()}.`, 'warn');
+      return;
+    }
+    onFurnitureChangeRef.current?.([...design.furniture, copy.item]);
+    onSelectFurnitureRef.current?.(copy.item.id);
+    showToast(copy.tight ? `Duplicated ${source.name} in a tight spot.` : `Duplicated ${source.name}.`);
+  };
+
+  const deleteFurniture = (id: string) => {
+    const design = latestInterior.current;
+    const index = design?.furniture.findIndex((f) => f.id === id) ?? -1;
+    if (!design || index < 0) return;
+    const removed = design.furniture[index];
+    onFurnitureChangeRef.current?.(design.furniture.filter((f) => f.id !== id));
+    onSelectFurnitureRef.current?.(null);
+    showToast(`Deleted ${removed.name}.`, 'info', {
+      label: 'Undo',
+      run: () => {
+        const latest = latestInterior.current;
+        if (!latest || latest.furniture.some((f) => f.id === removed.id)) return;
+        const list = [...latest.furniture];
+        list.splice(Math.min(index, list.length), 0, removed);
+        onFurnitureChangeRef.current?.(list);
+        onSelectFurnitureRef.current?.(removed.id);
+        setToast(null);
+      },
+    });
+  };
+  const deleteFurnitureRef = useRef(deleteFurniture);
+  deleteFurnitureRef.current = deleteFurniture;
+
+  // Delete removes the selected piece (unless the user is typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+      if (selectedFurnitureIdRef.current && latestInterior.current) deleteFurnitureRef.current(selectedFurnitureIdRef.current);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Dev-only handle for checking the editor in a browser (no UI selects a
+  // floor/wall yet): window.__interio3d.selectSurface('wall:north'), .builds().
+  useEffect(() => {
+    if (!(import.meta as { env?: { DEV?: boolean } }).env?.DEV) return;
+    const handle = { selectSurface: setSelectedSurface, builds: () => sceneBuildCount.current };
+    (window as unknown as { __interio3d?: typeof handle }).__interio3d = handle;
+    return () => { delete (window as unknown as { __interio3d?: typeof handle }).__interio3d; };
   }, []);
 
   // Handle camera position updates based on mode and spherical coords
@@ -377,46 +598,81 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
   // Setup Lights
   const setupLighting = (scene: THREE.Scene) => {
+    const isInterior = projectType === 'interior';
+    const settings = qualitySettings(quality, window.devicePixelRatio);
     // Ambient Light
     const ambient = new THREE.HemisphereLight(
       lightingMode === 'day' ? 0xfff7e9 : 0xb5c7e1,
       lightingMode === 'day' ? 0x7a6957 : 0x252b3a,
-      lightingMode === 'day' ? 0.72 : 0.48
+      lightingMode === 'day' ? (isInterior ? 0.55 : 0.72) : 0.48
     );
     scene.add(ambient);
 
     // Directional Sunlight
     const sunLight = new THREE.DirectionalLight(
       lightingMode === 'day' ? 0xfffaed : 0x93c5fd,
-      lightingMode === 'day' ? 1.05 : 0.55
+      lightingMode === 'day' ? (isInterior ? 1.25 : 1.05) : 0.55
     );
-    sunLight.position.set(15, 25, 12);
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.5;
-    sunLight.shadow.camera.far = 100;
-    const d = 20;
-    sunLight.shadow.camera.left = -d;
-    sunLight.shadow.camera.right = d;
-    sunLight.shadow.camera.top = d;
-    sunLight.shadow.camera.bottom = -d;
-    sunLight.shadow.bias = -0.0005;
-    sunLight.shadow.normalBias = 0.025;
-    sunLight.shadow.radius = 5;
+    if (isInterior) {
+      // Fit the sun's shadow map to the room: crisp, soft-edged shadows without acne.
+      const frustum = shadowFrustum(roomW, roomL, wallHeight);
+      sunLight.position.copy(sunPosition(roomW, roomL, wallHeight));
+      sunLight.shadow.mapSize.set(settings.shadowMapSize, settings.shadowMapSize);
+      sunLight.shadow.camera.near = frustum.near;
+      sunLight.shadow.camera.far = frustum.far;
+      sunLight.shadow.camera.left = -frustum.half;
+      sunLight.shadow.camera.right = frustum.half;
+      sunLight.shadow.camera.top = frustum.half;
+      sunLight.shadow.camera.bottom = -frustum.half;
+      sunLight.shadow.bias = -0.0003;
+      sunLight.shadow.normalBias = 0.035;
+      sunLight.shadow.radius = 4;
+    } else {
+      sunLight.position.set(15, 25, 12);
+      sunLight.shadow.mapSize.width = 2048;
+      sunLight.shadow.mapSize.height = 2048;
+      sunLight.shadow.camera.near = 0.5;
+      sunLight.shadow.camera.far = 100;
+      const d = 20;
+      sunLight.shadow.camera.left = -d;
+      sunLight.shadow.camera.right = d;
+      sunLight.shadow.camera.top = d;
+      sunLight.shadow.camera.bottom = -d;
+      sunLight.shadow.bias = -0.0005;
+      sunLight.shadow.normalBias = 0.025;
+      sunLight.shadow.radius = 5;
+    }
     scene.add(sunLight);
 
     // Soft Fill Light
-    const fillLight = new THREE.DirectionalLight(0xe0e7ff, 0.24);
+    const fillLight = new THREE.DirectionalLight(0xe0e7ff, isInterior ? 0.3 : 0.24);
     fillLight.position.set(-15, 12, -10);
     scene.add(fillLight);
 
     // Warm Interior Accent point lights
     if (lightingMode === 'night' || interiorData) {
-      const interiorLight = new THREE.PointLight(0xffbe76, 1.4, 15);
+      const interiorLight = new THREE.PointLight(0xffbe76, isInterior ? 1.1 : 1.4, 15);
       interiorLight.position.set(0, wallHeight - 0.4, 0);
-      interiorLight.castShadow = true;
+      // A shadow-casting point light renders the scene six extra times per frame, so interiors skip it.
+      interiorLight.castShadow = !isInterior;
       scene.add(interiorLight);
+    }
+
+    // Daylight spilling in through each window (no shadows, so it is cheap and cannot leak through walls).
+    if (isInterior && interiorData) {
+      const windows = resolveInteriorOpenings(interiorData, roomW, roomL).filter((o) => o.type === 'window').slice(0, 2);
+      for (const opening of windows) {
+        const mid = (opening.start + opening.end) / 2;
+        const inset = 0.45;
+        const position = opening.wall === 'north' ? [mid - roomW / 2, 0, -roomL / 2 + inset]
+          : opening.wall === 'south' ? [mid - roomW / 2, 0, roomL / 2 - inset]
+          : opening.wall === 'west' ? [-roomW / 2 + inset, 0, mid - roomL / 2]
+          : [roomW / 2 - inset, 0, mid - roomL / 2];
+        const spill = new THREE.PointLight(lightingMode === 'day' ? 0xfff1d6 : 0x8fa8d8, lightingMode === 'day' ? 1.4 : 0.35, Math.max(roomW, roomL) * 1.4, 1.6);
+        spill.position.set(position[0], Math.min(wallHeight - 0.5, 1.7), position[2]);
+        scene.add(spill);
+      }
     }
   };
 
@@ -427,12 +683,23 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     // the reconstructed-polygon shell don't use the wall cutaway/fade).
     shellWallMaterialsRef.current = [];
     wallGroupsRef.current = {};
+    wallMaterialsRef.current = {};
+    floorMeshRef.current = null;
+    floorColorRef.current = null;
+    wallKeysRef.current = {};
+    ownedMaterialsRef.current.clear();
 
     // Center point of room
     const centerX = roomW / 2;
     const centerZ = roomL / 2;
-    targetLookAt.current.set(0, wallHeight * 0.35, 0);
-    cameraAngles.current.radius = Math.max(roomW, roomL) * 1.6;
+    // Fit the camera when the room changes; a rebuild for any other reason
+    // (lighting toggle, furniture list change) keeps the user's view.
+    const fitKey = `${projectType}:${roomW}x${roomL}:${wallHeight}`;
+    if (cameraFitKeyRef.current !== fitKey) {
+      cameraFitKeyRef.current = fitKey;
+      targetLookAt.current.set(0, wallHeight * 0.35, 0);
+      cameraAngles.current.radius = Math.max(roomW, roomL) * 1.6;
+    }
     updateCameraPosition();
 
     // 1. Foundation Ground / Grid Floor
@@ -510,11 +777,11 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       const floorGeo = polygonCorners ? buildPolygonFloorGeometry(polygonCorners) : new THREE.PlaneGeometry(roomW, roomL);
       const floorColor = interiorData.colorPalette?.find((swatch) => swatch.role === 'flooring')?.hex || '#b99569';
       const floorMat = createFloorMaterial(floorColor, /tile|marble/i.test(interiorData.style || ''), showWireframe);
-      const floorMesh = new THREE.Mesh(floorGeo, floorMat);
-      floorMesh.rotation.x = -Math.PI / 2;
-      floorMesh.position.set(0, 0.01, 0);
-      floorMesh.receiveShadow = true;
+      const floorMesh = createInteriorFloor(floorMat, { width: roomW, depth: roomL }, floorGeo);
       scene.add(floorMesh);
+      floorMeshRef.current = floorMesh;
+      floorColorRef.current = `palette:${floorColor}`;
+      roomShapeRef.current = { width: roomW, depth: roomL, height: wallHeight, thickness: 0.2 };
 
       // Room perimeter shell.  Wall sections are laid out from the measured
       // room edges, rather than decorative caps or detached approximations.
@@ -543,8 +810,20 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         // each wall gets its own material instance so updateCameraFacingWallOpacity()
         // can independently fade whichever one still faces the camera in
         // "Interior" shell view (e.g. while wallShellMode is 'enclosed').
-        const roomOpenings = interiorData.openings?.length ? interiorData.openings : defaultRoomOpenings(roomW, roomL);
-        buildInteriorShell(scene, roomW, roomL, wallHeight, wallThick, wallMat, roomOpenings);
+        const shell = buildInteriorShell(scene, {
+          width: roomW,
+          depth: roomL,
+          height: wallHeight,
+          thickness: wallThick,
+          wallMaterial: wallMat,
+          openings: resolveInteriorOpenings(interiorData, roomW, roomL),
+        });
+        wallGroupsRef.current = shell.groups;
+        wallMaterialsRef.current = shell.wallMaterials;
+        WALL_SIDE_LIST.forEach((side) => { wallKeysRef.current[side] = `palette:${wallColor}`; });
+        shellWallMaterialsRef.current = shell.faces;
+        updateWallCutaway();
+        updateCameraFacingWallOpacity();
       }
       if (!polygonCorners && projectType === 'renovation') addStyledDecor(
         scene,
@@ -561,112 +840,214 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
       if (interiorData.furniture && Array.isArray(interiorData.furniture)) {
         furnitureDataRef.current = interiorData.furniture.map((f) => ({ ...f }));
-
         interiorData.furniture.forEach((item) => {
-          const footprint = furnitureFootprint(item);
-          const footprintWidth = footprint.width;
-          const footprintDepth = footprint.depth;
-          let itemPosX = item.x + footprintWidth / 2 - roomW / 2;
-          let itemPosZ = item.y + footprintDepth / 2 - roomL / 2;
-          if (polygonCorners) {
-            const clamped = clampPointToPolygon(itemPosX, itemPosZ, polygonCorners);
-            itemPosX = clamped.x;
-            itemPosZ = clamped.z;
-          }
-          const rotRad = ((item.rotation || 0) * Math.PI) / 180;
-
-          let rootObject: THREE.Object3D;
-
-          if (item.category === 'seating') {
-            // Detailed Sofa / Armchair
-            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rootObject.position.set(itemPosX, 0, itemPosZ);
-            rootObject.rotation.y = rotRad;
-            scene.add(rootObject);
-          } else if (item.category === 'table') {
-            // Detailed Table
-            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rootObject.position.set(itemPosX, 0, itemPosZ);
-            rootObject.rotation.y = rotRad;
-            scene.add(rootObject);
-          } else if (item.category === 'storage') {
-            // Credenza / Shelf
-            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rootObject.position.set(itemPosX, 0, itemPosZ);
-            rootObject.rotation.y = rotRad;
-            scene.add(rootObject);
-          } else if (item.category === 'lighting') {
-            // Floor Lamp
-            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rootObject.position.set(itemPosX, 0, itemPosZ);
-            rootObject.rotation.y = rotRad;
-            scene.add(rootObject);
-          } else if (item.category === 'decor') {
-            // Flat Area Rug (wrapped in a group so it rotates like everything else)
-            const rugGroup = new THREE.Group();
-            const model = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rugGroup.add(model);
-            rugGroup.position.set(itemPosX, 0, itemPosZ);
-            rugGroup.rotation.y = rotRad;
-            scene.add(rugGroup);
-            rootObject = rugGroup;
-          } else {
-            // Standard bounding furniture volume
-            rootObject = createFurnitureModel(item, interiorData.colorPalette || [], interiorData.style || 'Modern', showWireframe);
-            rootObject.position.set(itemPosX, 0, itemPosZ);
-            rootObject.rotation.y = rotRad;
-            scene.add(rootObject);
-          }
-
-          rootObject.userData.furnitureId = item.id;
-          rootObject.userData.category = item.category;
-          furnitureObjectsRef.current.push(rootObject);
-
-          // Load the matched local GLB over the existing procedural fallback.
-          // Missing or invalid assets leave the fallback visible.
-          // The bundled starter GLBs are intentionally minimal primitives; keep
-          // the more detailed, style-aware procedural models visible for them.
-          // Replacing these with a curated model in /models automatically opts
-          // into GLTFLoader while retaining the same fallback on load failure.
-          if (item.assetUrl && !item.assetUrl.startsWith('/assets/furniture/')) {
-            const fallback = rootObject;
-            new GLTFLoader().load(item.assetUrl, (gltf) => {
-              const model = gltf.scene;
-              const bounds = new THREE.Box3().setFromObject(model);
-              const size = bounds.getSize(new THREE.Vector3());
-              if (size.x <= 0 || size.y <= 0 || size.z <= 0) return;
-              const targetHeight = item.height || (item.category === 'seating' ? 0.95 : 0.8);
-              model.scale.set(item.width / size.x, targetHeight / size.y, item.depth / size.z);
-              model.updateMatrixWorld(true);
-              const scaledBounds = new THREE.Box3().setFromObject(model);
-              model.position.set(itemPosX, -scaledBounds.min.y, itemPosZ);
-              model.rotation.y = rotRad;
-              model.traverse((child) => {
-                if (!(child instanceof THREE.Mesh)) return;
-                child.castShadow = true;
-                child.receiveShadow = true;
-                const tint = new THREE.Color(item.color || interiorData.colorPalette?.[0]?.hex || '#b8a58d');
-                const tintMaterial = (material: THREE.Material) => {
-                  const clone = material.clone();
-                  if ('color' in clone && (clone as THREE.MeshStandardMaterial).color) {
-                    (clone as THREE.MeshStandardMaterial).color.lerp(tint, 0.22);
-                  }
-                  return clone;
-                };
-                child.material = Array.isArray(child.material) ? child.material.map(tintMaterial) : tintMaterial(child.material);
-              });
-              model.userData.furnitureId = item.id;
-              model.userData.category = item.category;
-              scene.remove(fallback);
-              scene.add(model);
-              const index = furnitureObjectsRef.current.indexOf(fallback);
-              if (index >= 0) furnitureObjectsRef.current[index] = model;
-              if (selectedFurnitureId === item.id) transformControlsRef.current?.attach(model);
-            }, undefined, () => { /* Keep the procedural fallback when an asset is unavailable. */ });
-          }
+          furnitureObjectsRef.current.push(createFurnitureObject(scene, item));
         });
       }
     }
+  };
+
+  // Reconstruction (Workflow 3) corners in centred metre space, or null for a rectangular room.
+  const getPolygonCorners = () =>
+    reconstructionCorners
+      ? reconstructionCorners.slice(0, 4).map((p) => ({ x: (p.x - 0.5) * roomW, z: (p.y - 0.5) * roomL }))
+      : null;
+
+  // Where a piece sits in the scene, matching the 2D plan's footprint.
+  const furnitureScenePosition = (item: FurnitureItem) => {
+    const transform = furnitureTransform3D(item, { width: roomW, depth: roomL });
+    let { x, z } = transform;
+    const polygon = getPolygonCorners();
+    if (polygon) {
+      const clamped = clampPointToPolygon(x, z, polygon);
+      x = clamped.x;
+      z = clamped.z;
+    }
+    return { x, z, rotation: transform.rotationY };
+  };
+
+  // Build one piece (procedural model, then a matched GLB over it if the item
+  // has one), add it to the scene and return its root. Used for the first
+  // build and whenever a single piece must be re-created in place.
+  const createFurnitureObject = (scene: THREE.Scene, item: FurnitureItem): THREE.Object3D => {
+    const palette = interiorData?.colorPalette || [];
+    const style = interiorData?.style || 'Modern';
+    const { x: itemPosX, z: itemPosZ, rotation: rotRad } = furnitureScenePosition(item);
+    const model = createFurnitureModel(item, palette, style, showWireframe);
+    // Rugs are wrapped in a group so they rotate like everything else.
+    let rootObject: THREE.Object3D = model;
+    if (item.category === 'decor') {
+      rootObject = new THREE.Group();
+      rootObject.add(model);
+    }
+    rootObject.position.set(itemPosX, 0, itemPosZ);
+    rootObject.rotation.y = rotRad;
+    scene.add(rootObject);
+    rootObject.userData.furnitureId = item.id;
+    rootObject.userData.category = item.category;
+    rootObject.userData.appearanceKey = furnitureAppearanceKey(item, palette, style);
+    if (projectType === 'interior' && !showWireframe) {
+      const blob = createContactShadow(item);
+      if (blob) rootObject.add(blob);
+    }
+
+    // Load the matched local GLB over the existing procedural fallback.
+    // Missing or invalid assets leave the fallback visible.
+    // The bundled starter GLBs are intentionally minimal primitives; keep
+    // the more detailed, style-aware procedural models visible for them.
+    // Replacing these with a curated model in /models automatically opts
+    // into GLTFLoader while retaining the same fallback on load failure.
+    // A model the item names itself, else a bundled CC0 model that suits it.
+    const explicitUrl = item.assetUrl && !item.assetUrl.startsWith('/assets/furniture/') ? item.assetUrl : null;
+    const real = explicitUrl || projectType !== 'interior' ? null : findRealModel(item);
+    const modelUrl = explicitUrl ?? real?.url ?? null;
+    if (modelUrl) {
+      const fallback = rootObject;
+      void loadFurnitureModel(modelUrl, item, glbLoader, real ? { maxStretch: real.maxStretch, flip: real.flip } : {}).then((holder) => {
+        // A failed or empty model keeps the procedural fallback. So does a piece
+        // that was replaced or removed while the file was loading.
+        if (!holder || !furnitureObjectsRef.current.includes(fallback)) return;
+        holder.position.set(itemPosX, 0, itemPosZ);
+        holder.rotation.y = rotRad;
+        holder.userData.furnitureId = item.id;
+        holder.userData.category = item.category;
+        holder.userData.appearanceKey = fallback.userData.appearanceKey;
+        scene.remove(fallback);
+        holder.add(...fallback.children.filter((child) => child.userData.contactShadow));
+        scene.add(holder);
+        const index = furnitureObjectsRef.current.indexOf(fallback);
+        if (index >= 0) furnitureObjectsRef.current[index] = holder;
+        if (selectedFurnitureIdRef.current === item.id) transformControlsRef.current?.attach(holder);
+      });
+    }
+    return rootObject;
+  };
+
+  // Bring the existing interior scene in line with the latest data without
+  // rebuilding it: floor/wall colours, per-piece colours and positions.
+  // Camera, orbit target, selection and the gizmo are not touched.
+  // Apply the floor and wall looks (a finish if the user set one, else the
+  // palette colour) to the existing meshes. Only surfaces whose look changed
+  // are touched; replaced finish materials are disposed.
+  const applyInteriorFinishes = () => {
+    if (!interiorData) return;
+    const palette = interiorData.colorPalette || [];
+    const style = interiorData.style || 'Modern';
+    const finishes = interiorData.finishes;
+    const own = (material: THREE.MeshStandardMaterial) => {
+      material.wireframe = showWireframe;
+      ownedMaterialsRef.current.add(material);
+      return material;
+    };
+    const release = (material: THREE.Material | THREE.Material[]) => {
+      [material].flat().forEach((m) => {
+        if (ownedMaterialsRef.current.delete(m)) m.dispose();
+      });
+    };
+
+    const floorMesh = floorMeshRef.current;
+    if (floorMesh) {
+      const floorColor = palette.find((swatch) => swatch.role === 'flooring')?.hex || '#b99569';
+      const finish = finishes?.floor;
+      const key = finish ? `finish:${JSON.stringify(finish)}` : `palette:${floorColor}`;
+      if (floorColorRef.current !== key) {
+        const previous = floorMesh.material;
+        if (finish) {
+          const variant = getMaterialVariant(finish.variantId, finish.materialId);
+          floorMesh.material = own(createFloorFinishMaterial(variant, {
+            width: roomW, depth: roomL, scale: finish.scale, color: finish.color, roughness: finish.roughness,
+          }));
+        } else {
+          const plain = createFloorMaterial(floorColor, /tile|marble/i.test(style));
+          plain.wireframe = showWireframe;
+          floorMesh.material = plain;
+        }
+        release(previous);
+        floorColorRef.current = key;
+      }
+    }
+
+    const wallColor = palette.find((swatch) => swatch.role === 'wall')?.hex || '#eee9df';
+    WALL_SIDE_LIST.forEach((side) => {
+      const current = wallMaterialsRef.current[side];
+      const group = wallGroupsRef.current[side];
+      if (!current || !group) return;
+      const finish = resolveWallFinish(finishes, side);
+      const key = finish ? `finish:${JSON.stringify(finish)}` : `palette:${wallColor}`;
+      if (wallKeysRef.current[side] === key) return;
+      const previousKey = wallKeysRef.current[side];
+      wallKeysRef.current[side] = key;
+      if (!finish && previousKey?.startsWith('palette:')) {
+        current.color.set(wallColor);
+        return;
+      }
+      const next = own(
+        finish
+          ? createSurfaceMaterial(getMaterialVariant(finish.variantId, finish.materialId), { color: finish.color, roughness: finish.roughness, scale: finish.scale })
+          : new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.9 }),
+      );
+      group.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.userData.surface === `wall:${side}`) child.material = next;
+      });
+      wallMaterialsRef.current[side] = next;
+      shellWallMaterialsRef.current.forEach((entry) => {
+        if (entry.material === current) entry.material = next;
+      });
+      release(current);
+    });
+    updateCameraFacingWallOpacity();
+  };
+
+  const syncInteriorAppearance = (scene: THREE.Scene) => {
+    if (!interiorData) return;
+    const palette = interiorData.colorPalette || [];
+    const style = interiorData.style || 'Modern';
+
+    applyInteriorFinishes();
+
+    // While a gizmo drag is in progress the live objects are the source of truth.
+    if (isTransformDragging.current) return;
+    const items = interiorData.furniture || [];
+    furnitureDataRef.current = items.map((f) => ({ ...f }));
+    items.forEach((item) => {
+      const index = furnitureObjectsRef.current.findIndex((obj) => obj.userData.furnitureId === item.id);
+      if (index === -1) return;
+      let object = furnitureObjectsRef.current[index];
+      if (object.userData.appearanceKey !== furnitureAppearanceKey(item, palette, style)) {
+        // Models share cached materials, so a recolour swaps this one piece's model.
+        scene.remove(object);
+        disposeContactShadow(object);
+        object = createFurnitureObject(scene, item);
+        furnitureObjectsRef.current[index] = object;
+        if (selectedFurnitureIdRef.current === item.id) transformControlsRef.current?.attach(object);
+        return;
+      }
+      const { x, z, rotation } = furnitureScenePosition(item);
+      if (Math.abs(object.position.x - x) > 1e-4) object.position.x = x;
+      if (Math.abs(object.position.z - z) > 1e-4) object.position.z = z;
+      if (Math.abs(object.rotation.y - rotation) > 1e-4) object.rotation.y = rotation;
+    });
+  };
+
+  // Show an outline on the selected floor/wall (or remove it).
+  const syncSurfaceHighlight = () => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    if (highlightRef.current) {
+      scene.remove(highlightRef.current);
+      highlightRef.current.traverse((child) => {
+        if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+          child.geometry.dispose();
+          (child.material as THREE.Material).dispose();
+        }
+      });
+      highlightRef.current = null;
+    }
+    const surface = selectedSurfaceRef.current;
+    if (!surface || projectType !== 'interior' || roomShapeRef.current.width === 0) return;
+    const outline = createSurfaceHighlight(surface, roomShapeRef.current);
+    scene.add(outline);
+    highlightRef.current = outline;
   };
 
   // Procedural Furniture Helpers
@@ -700,94 +1081,6 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     }
     parent.add(mesh);
     return mesh;
-  };
-
-  const buildInteriorShell = (
-    scene: THREE.Scene,
-    width: number,
-    depth: number,
-    height: number,
-    thickness: number,
-    wallMaterial: THREE.Material,
-    openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[]
-  ) => {
-    const groups = {} as Record<'north' | 'south' | 'east' | 'west', THREE.Group>;
-    const walls = [
-      { side: 'north' as const, length: width, centerX: 0, centerZ: -depth / 2, horizontal: true },
-      { side: 'south' as const, length: width, centerX: 0, centerZ: depth / 2, horizontal: true },
-      { side: 'west' as const, length: depth, centerX: -width / 2, centerZ: 0, horizontal: false },
-      { side: 'east' as const, length: depth, centerX: width / 2, centerZ: 0, horizontal: false },
-    ];
-    const frameMaterial = new THREE.MeshStandardMaterial({ color: '#755d45', roughness: 0.58 });
-    const glassMaterial = new THREE.MeshStandardMaterial({ color: '#8fd3e8', roughness: 0.18, metalness: 0.22, transparent: true, opacity: 0.62 });
-    const doorMaterial = new THREE.MeshStandardMaterial({ color: '#9a7654', roughness: 0.7 });
-
-    for (const wall of walls) {
-      const group = new THREE.Group();
-      const wallFaceMaterial = wallMaterial.clone();
-      group.name = `${wall.side}-wall`;
-      groups[wall.side] = group;
-      scene.add(group);
-      const sideOpenings = openings
-        .filter((opening) => opening.wall === wall.side)
-        .map((opening) => ({ ...opening, start: Math.max(0, Math.min(wall.length, opening.start)), end: Math.max(0, Math.min(wall.length, opening.end)) }))
-        .filter((opening) => opening.end - opening.start > 0.15)
-        .sort((a, b) => a.start - b.start);
-      const origin = -wall.length / 2;
-      const center = (start: number, end: number) => origin + (start + end) / 2;
-      const addSpan = (start: number, end: number, bottom: number, top: number) => {
-        if (end <= start || top <= bottom) return;
-        const span = end - start;
-        const x = wall.horizontal ? center(start, end) : wall.centerX;
-        const z = wall.horizontal ? wall.centerZ : center(start, end);
-        createWallSegment(group, wall.horizontal ? span : thickness, wall.horizontal ? thickness : span, top - bottom, x, (top + bottom) / 2, z, wallFaceMaterial);
-        const normal = wall.side === 'north' ? new THREE.Vector3(0, 0, -1) : wall.side === 'south' ? new THREE.Vector3(0, 0, 1) : wall.side === 'east' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0);
-        shellWallMaterialsRef.current.push({ normal, material: wallFaceMaterial as THREE.MeshStandardMaterial });
-      };
-      let cursor = 0;
-      for (const opening of sideOpenings) {
-        const start = Math.max(cursor, opening.start);
-        const end = Math.max(start, opening.end);
-        addSpan(cursor, start, 0, height);
-        if (opening.type === 'window') {
-          const sill = Math.min(0.92, height * 0.34);
-          const head = Math.min(height - 0.08, 2.18);
-          addSpan(start, end, 0, sill);
-          addSpan(start, end, head, height);
-          const mid = center(start, end);
-          const x = wall.horizontal ? mid : wall.centerX;
-          const z = wall.horizontal ? wall.centerZ : mid;
-          const paneDepth = thickness * 0.38;
-          const pane = createWallSegment(group, wall.horizontal ? end - start : paneDepth, wall.horizontal ? paneDepth : end - start, Math.max(0.1, head - sill), x, (sill + head) / 2, z, glassMaterial);
-          pane.castShadow = false;
-          const frameWidth = 0.045;
-          for (const offset of [start, end]) {
-            const fx = wall.horizontal ? origin + offset : wall.centerX;
-            const fz = wall.horizontal ? wall.centerZ : origin + offset;
-            createWallSegment(group, wall.horizontal ? frameWidth : thickness * 0.55, wall.horizontal ? thickness * 0.55 : frameWidth, head - sill + 0.08, fx, (sill + head) / 2, fz, frameMaterial);
-          }
-          createWallSegment(group, wall.horizontal ? end - start : thickness * 0.55, wall.horizontal ? thickness * 0.55 : end - start, frameWidth, x, sill, z, frameMaterial);
-        } else {
-          const doorHeight = Math.min(2.08, height - 0.12);
-          addSpan(start, end, doorHeight, height);
-          const mid = center(start, end);
-          const x = wall.horizontal ? mid : wall.centerX;
-          const z = wall.horizontal ? wall.centerZ : mid;
-          const leaf = createWallSegment(group, wall.horizontal ? end - start - 0.05 : 0.045, wall.horizontal ? 0.045 : end - start - 0.05, doorHeight - 0.04, x, (doorHeight - 0.04) / 2, z, doorMaterial);
-          leaf.castShadow = false;
-          for (const offset of [start, end]) {
-            const fx = wall.horizontal ? origin + offset : wall.centerX;
-            const fz = wall.horizontal ? wall.centerZ : origin + offset;
-            createWallSegment(group, wall.horizontal ? 0.055 : thickness * 0.55, wall.horizontal ? thickness * 0.55 : 0.055, doorHeight, fx, doorHeight / 2, fz, frameMaterial);
-          }
-        }
-        cursor = Math.max(cursor, end);
-      }
-      addSpan(cursor, wall.length, 0, height);
-    }
-    wallGroupsRef.current = groups;
-    updateWallCutaway();
-    updateCameraFacingWallOpacity();
   };
 
   // Wall segment spanning two arbitrary points in the X/Z ground plane,
@@ -1033,8 +1326,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     if (idx === -1) return;
     const current = list[idx];
 
-    const rotationDeg = THREE.MathUtils.radToDeg(object.rotation.y);
-    current.rotation = ((rotationDeg % 360) + 360) % 360;
+    current.rotation = rotationFromRadians(object.rotation.y);
 
     if (transformControlsRef.current?.getMode() !== 'translate') return;
 
@@ -1049,22 +1341,23 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
     const clampedX = Math.min(Math.max(rawX, 0), maxX);
     const clampedY = Math.min(Math.max(rawY, 0), maxY);
 
-    const candidate = { ...current, x: clampedX, y: clampedY };
-    const overlapsOther =
-      current.category !== 'decor' &&
-      list.some((other, i) => i !== idx && other.category !== 'decor' && furnitureAabbOverlap(candidate, other));
-
-    if (overlapsOther) {
-      // Reject the move: snap the mesh back to its last valid position.
-      object.position.x = current.x + footprintWidth / 2 - roomW / 2;
-      object.position.z = current.y + footprintDepth / 2 - roomL / 2;
-      return;
-    }
-
+    // The piece is always kept inside the walls. Overlaps and blocked doors or
+    // windows are allowed (the user may want them) but flagged with a warning.
     current.x = clampedX;
     current.y = clampedY;
     object.position.x = clampedX + footprintWidth / 2 - roomW / 2;
     object.position.z = clampedY + footprintDepth / 2 - roomL / 2;
+
+    const landed = furnitureFootprint(current);
+    const isFlat = (f: FurnitureItem) => f.category === 'decor' && /rug|carpet/i.test(f.name);
+    const touching = isFlat(current)
+      ? undefined
+      : list.find((other, i) => i !== idx && !isFlat(other) && furnitureAabbOverlap(landed, furnitureFootprint(other)));
+    const blocksOpening = !isFlat(current) && interiorData
+      ? hitsOpening(landed, { width: roomW, depth: roomL, openings: resolveInteriorOpenings(interiorData, roomW, roomL), doorClearance: 0.3 })
+      : false;
+    if (touching) showToast(`${current.name} overlaps ${touching.name}.`, 'warn');
+    else if (blocksOpening) showToast(`${current.name} is blocking a door or window.`, 'warn');
   };
 
   // Attach/detach TransformControls to whichever furniture object matches
@@ -1126,7 +1419,39 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   // Raycast from a screen point and select whichever furniture object (if
   // any) it hits; clicking empty space deselects.
   const handleFurnitureRaycastSelect = (clientX: number, clientY: number) => {
-    onSelectFurnitureRef.current?.(raycastFurnitureIdAt(clientX, clientY));
+    const furnitureId = raycastFurnitureIdAt(clientX, clientY);
+    if (furnitureId || projectType !== 'interior') {
+      onSelectFurnitureRef.current?.(furnitureId);
+      return;
+    }
+    // Furniture wins; otherwise the nearest visible wall or the floor.
+    onSelectFurnitureRef.current?.(null);
+    setSelectedSurface(raycastSurfaceAt(clientX, clientY));
+  };
+
+  // Which editable surface (floor or a wall) is under a screen point. Walls
+  // hidden by the cut-away are skipped, as are walls faded out in front of the camera.
+  const raycastSurfaceAt = (clientX: number, clientY: number): SurfaceId | null => {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !camera) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    const targets: THREE.Object3D[] = [];
+    if (floorMeshRef.current) targets.push(floorMeshRef.current);
+    WALL_SIDE_LIST.forEach((side) => {
+      const group = wallGroupsRef.current[side];
+      const material = wallMaterialsRef.current[side];
+      if (!group || !group.visible || (material && material.transparent && material.opacity < 0.5)) return;
+      group.traverse((child) => { if (child instanceof THREE.Mesh && child.userData.surface) targets.push(child); });
+    });
+    raycasterRef.current.setFromCamera(ndc, camera);
+    const hit = raycasterRef.current.intersectObjects(targets, false)[0];
+    const surface = hit?.object.userData.surface;
+    return isSurfaceId(surface) ? surface : null;
   };
 
   // Mouse drag handlers for Orbit (suppressed while TransformControls is
@@ -1143,6 +1468,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       if (hitFurnitureId !== selectedFurnitureId) {
         onSelectFurnitureRef.current?.(hitFurnitureId);
       }
+      setSelectedSurface(null);
       isDragging.current = false;
       return;
     }
@@ -1199,8 +1525,18 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
   // Export Snapshot
   const handleExportPNG = () => {
-    if (!rendererRef.current) return;
+    if (!rendererRef.current || !sceneRef.current || !cameraRef.current) return;
+    // Editing overlays (selection outline) must not appear in the exported image.
+    const hidden: THREE.Object3D[] = [];
+    sceneRef.current.traverse((object) => {
+      if (object.userData.exportHidden && object.visible) {
+        object.visible = false;
+        hidden.push(object);
+      }
+    });
+    rendererRef.current.render(sceneRef.current, cameraRef.current);
     const dataUrl = rendererRef.current.domElement.toDataURL('image/png');
+    hidden.forEach((object) => { object.visible = true; });
     const link = document.createElement('a');
     link.download = `INTERIO_${projectTitle.replace(/\s+/g, '_')}_3D.png`;
     link.href = dataUrl;
@@ -1232,7 +1568,10 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
   };
 
   return (
-    <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col bg-slate-950 overflow-hidden select-none">
+    <div className={`view3d-root w-full h-[calc(100vh-5rem)] flex ${isSmall ? 'flex-col' : 'flex-row'} bg-slate-950 overflow-hidden select-none`}>
+    {/* Touch screens get finger-sized buttons everywhere in the viewer. */}
+    <style>{'@media (pointer: coarse) { .view3d-root button { min-height: 44px; min-width: 44px; } }'}</style>
+    <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
       {/* 3D Canvas Mount */}
       <div
         ref={mountRef}
@@ -1241,11 +1580,11 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
-        className="w-full h-full cursor-grab active:cursor-grabbing"
+        className="w-full flex-1 min-h-0 cursor-grab active:cursor-grabbing"
       />
 
       {/* Top Floating Control Bar */}
-      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
+      <div className="absolute top-4 left-4 right-4 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
         {/* Left: Back & Project Title */}
         <div className="flex items-center gap-2 pointer-events-auto">
           {onBackToHome && (
@@ -1269,7 +1608,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
             <span>Back</span>
           </button>
 
-          <div className="px-3 py-1.5 rounded-lg bg-stone-900/90 text-white border border-stone-800 backdrop-blur-md flex items-center gap-2">
+          <div className="px-3 py-1.5 rounded-lg bg-stone-900/90 text-white border border-stone-800 backdrop-blur-md flex items-center gap-2 whitespace-nowrap">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
             <div>
               <p className="text-xs font-medium text-stone-200 leading-none">
@@ -1287,7 +1626,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
         </div>
 
         {/* Right: Camera Angles & Mode Toggles */}
-        <div className="flex items-center gap-1.5 pointer-events-auto">
+        <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto">
           {/* Camera Presets */}
           <div className="p-1 rounded-lg bg-stone-900/90 border border-stone-800 backdrop-blur-md flex items-center gap-1">
             <button
@@ -1349,6 +1688,33 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
 
+          {projectType === 'interior' && interiorData && (
+            <button
+              id="btn-3d-quality"
+              onClick={() => setQuality(quality === 'high' ? 'balanced' : 'high')}
+              title={quality === 'high' ? 'High quality: sharper shadows and edges. Click for Balanced (smoother on slower devices).' : 'Balanced: smoother on slower devices. Click for High quality.'}
+              aria-label={`Render quality: ${quality}. Click to change.`}
+              className="px-2.5 py-1.5 rounded-lg bg-stone-900/90 hover:bg-stone-800 text-stone-300 border border-stone-800 backdrop-blur-md text-xs font-medium transition-colors cursor-pointer"
+            >
+              {quality === 'high' ? 'High' : 'Balanced'}
+            </button>
+          )}
+
+          {projectType === 'interior' && interiorData && (
+            <button
+              id="btn-3d-design-panel"
+              onClick={() => setPanelOpen(!panelOpen)}
+              aria-pressed={panelOpen}
+              title={panelOpen ? 'Hide design panel' : 'Edit floor, walls and furniture'}
+              className={`px-2.5 py-1.5 rounded-lg border backdrop-blur-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
+                panelOpen ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-stone-900/90 hover:bg-stone-800 text-stone-300 border-stone-800'
+              }`}
+            >
+              <Paintbrush className="w-3.5 h-3.5" />
+              <span>Design</span>
+            </button>
+          )}
+
           {interiorData && (
             <button
               id="btn-3d-shell-view"
@@ -1365,7 +1731,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
 
       {/* Furniture Selection & Transform Panel (interior / renovation only) */}
       {interiorData && selectedFurnitureId && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3 py-2 rounded-xl">
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3 py-2 rounded-xl">
           <span className="text-xs font-medium text-stone-200 max-w-[140px] truncate">
             {interiorData.furniture?.find((f) => f.id === selectedFurnitureId)?.name || 'Selected Item'}
           </span>
@@ -1407,7 +1773,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       )}
 
       {/* Bottom Action / Export Bar */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3.5 py-2 rounded-xl">
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex max-w-[calc(100%-1rem)] items-center gap-2 overflow-x-auto [&>*]:flex-shrink-0 [&>*]:whitespace-nowrap bg-stone-900/90 border border-stone-800 backdrop-blur-md px-3.5 py-2 rounded-xl">
         {/* Wall Height Adjuster */}
         <div className="hidden sm:flex items-center gap-2 border-r border-stone-800 pr-3 mr-1">
           <span className="text-[11px] text-stone-400">
@@ -1497,13 +1863,35 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       </div>
 
       {/* Floating Instructions Toast */}
-      <div className="absolute bottom-6 left-6 hidden lg:block pointer-events-none">
+      <div className={`absolute bottom-6 left-6 hidden pointer-events-none ${projectType === 'interior' && panelOpen ? '2xl:block' : 'lg:block'}`}>
         <div className="bg-stone-900/80 border border-stone-800 backdrop-blur-md px-3 py-1.5 rounded-lg text-[11px] text-stone-400">
           {interiorData
-            ? 'Click furniture to select · Drag gizmo to move/rotate · Drag empty space to orbit · Scroll to zoom'
+            ? (projectType === 'interior' ? 'Click furniture, a wall or the floor to select' : 'Click furniture to select') + ' · Drag gizmo to move/rotate · Drag empty space to orbit · Scroll to zoom'
             : 'Left-click & drag to rotate · Scroll to zoom'}
         </div>
       </div>
+
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`absolute bottom-24 left-1/2 z-20 flex max-w-[90%] -translate-x-1/2 items-center gap-3 rounded-lg border px-3.5 py-2 text-xs font-medium shadow-lg ${
+            toast.tone === 'warn' ? 'border-amber-500/60 bg-amber-950/95 text-amber-100' : 'border-stone-700 bg-stone-900/95 text-stone-100'
+          }`}
+        >
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              type="button"
+              id="btn-toast-action"
+              onClick={toast.action.run}
+              className="rounded-md bg-white/15 px-2 py-1 text-white hover:bg-white/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+            >
+              {toast.action.label}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Export Confirmation Toast */}
       {exportedToast && (
@@ -1512,6 +1900,35 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
           <span>File downloaded successfully</span>
         </div>
       )}
+    </div>
+    {projectType === 'interior' && interiorData && (
+      <InteriorDesignPanel
+        data={interiorData as InteriorDesignResult}
+        open={panelOpen}
+        onToggle={() => setPanelOpen(false)}
+        isSmall={isSmall}
+        width={panelWidth}
+        onWidthChange={setPanelWidth}
+        tab={panelTab}
+        onTab={(tab) => {
+          setPanelTab(tab);
+          if (tab === 'floor') { onSelectFurnitureRef.current?.(null); setSelectedSurface('floor'); }
+          else if (tab === 'walls') { onSelectFurnitureRef.current?.(null); setSelectedSurface(wallScope === 'all' ? null : `wall:${wallScope}`); }
+          else setSelectedSurface(null);
+        }}
+        wallScope={wallScope}
+        onWallScope={(scope) => {
+          setWallScope(scope);
+          setSelectedSurface(scope === 'all' ? null : `wall:${scope}`);
+        }}
+        selectedFurnitureId={selectedFurnitureId}
+        onAddFurniture={addFurniture}
+        onDuplicateFurniture={duplicateFurniture}
+        onDeleteFurniture={deleteFurniture}
+        onChange={(next) => onInteriorChangeRef.current?.(next)}
+        onFurnitureChange={(list) => onFurnitureChangeRef.current?.(list)}
+      />
+    )}
     </div>
   );
 };

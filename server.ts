@@ -8,7 +8,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { Client, handle_file } from '@gradio/client';
 import { defaultRoomOpenings, optimizeFurnitureLayout, roomDoorClearance, type FurnitureSuggestion, type LayoutOpening } from './src/services/layoutOptimizer';
-import { createRoomFurnitureSuggestions } from './src/services/interiorFurniture';
+import { createRoomFurnitureSuggestions, furnitureColorRole, roleColorHex, type RequirementReport } from './src/services/interiorFurniture';
+import { nearestColorName, normalizeHex, resolveColor, resolveColorsWithFallback, type ColorAiLookup, type ResolvedColor } from './src/services/colorResolver';
+import { derivePalette, type StyleColorBase } from './src/services/colorTheory';
+import { getStyleProfile } from './src/services/styleProfiles';
+import { applyRemovals, parseRequirementsWithFallback, REQUIREMENT_ITEMS, type ParsedRequirements, type RequirementsAiParser } from './src/services/requirements';
+import { formatPriceRange, getBudgetTier, priceRange, totalPriceRange } from './src/services/budgetTiers';
 import { getStyleRecipe, normalizeRoomType } from './src/services/interiorStyles';
 import { matchFurnitureAsset } from './src/services/furnitureAssets';
 import { createQwenRenovationPrompt, validateQwenRecommendations, type QwenRenovationInput } from './src/services/qwenRenovation';
@@ -26,7 +31,7 @@ dotenv.config();
 const JWT_SECRET = process.env.JWT_SECRET || 'interio-dev-secret-change-me';
 const JWT_EXPIRES_IN = '7d';
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 // Body parser
@@ -184,6 +189,47 @@ export function getGeminiClient(): GoogleGenAI | null {
       },
     },
   });
+}
+
+// Asks Gemini for hex values for colour phrases the local resolver does not
+// know ("burnt sienna"-style names). Returns null when no key / on any failure
+// so callers keep the phrase as unresolved instead of failing the request.
+const geminiColorLookup: ColorAiLookup = async (phrases) => {
+  const ai = getGeminiClient();
+  if (!ai || !phrases.length) return null;
+  try {
+    const text = await generateGeminiContentWithFallback(
+      ai,
+      `Convert each interior-design colour description to one representative hex colour. Return STRICT JSON only, an object mapping each description exactly as given to a "#rrggbb" string. Descriptions: ${JSON.stringify(phrases.slice(0, 8))}`,
+      { temperature: 0, responseMimeType: 'application/json' },
+    );
+    const parsed = JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+// Turns free-text requirements into the fixed add/remove vocabulary. Used only when the
+// keyword parser finds nothing; null on no key or any failure.
+const geminiRequirementsParser: RequirementsAiParser = async (text) => {
+  const ai = getGeminiClient();
+  if (!ai) return null;
+  try {
+    const reply = await generateGeminiContentWithFallback(
+      ai,
+      `Read these interior design requirements and return STRICT JSON only: {"add":[],"remove":[],"accessibility":false,"pets":false,"kids":false}. "add"/"remove" may only contain items from ${JSON.stringify(REQUIREMENT_ITEMS)}: add = things the user wants in the room, remove = things they do not want. accessibility = wheelchair/mobility needs; pets/kids = animals or children live there. Requirements: ${JSON.stringify(text.slice(0, 600))}`,
+      { temperature: 0, responseMimeType: 'application/json' },
+    );
+    return JSON.parse(reply.replace(/```json/g, '').replace(/```/g, '').trim());
+  } catch {
+    return null;
+  }
+};
+
+/** Resolve the user's preferred colours (local tables first, Gemini for leftovers). */
+export function resolveUserColors(colors: string[]): Promise<ResolvedColor[]> {
+  return resolveColorsWithFallback(colors, geminiColorLookup);
 }
 
 // Races a promise against a timeout so a stalled call (e.g. a hung network
@@ -462,6 +508,13 @@ app.post('/api/gemini/interior', async (req, res) => {
     if (!type) return res.status(400).json({ error: 'Select a room type before generating an interior layout.' });
     const cleanedColors = (Array.isArray(preferredColors) ? preferredColors : []).filter((color: unknown) => typeof color === 'string').slice(0, 8).map((color: string) => color.slice(0, 40));
     const cleanedRequirements = String(additionalRequirements).slice(0, 1000);
+    // Resolved ahead of generation; consumed by the palette derivation (tasks3 2.1).
+    const resolvedColors = await resolveUserColors(cleanedColors);
+    const unresolvedColors = resolvedColors.filter((c) => c.source === 'unresolved').map((c) => c.input);
+    if (unresolvedColors.length) console.log(`[INTERIO Engine] Could not interpret colour(s): ${unresolvedColors.join(', ')}`);
+    const parsedRequirements = await parseRequirementsWithFallback(cleanedRequirements, geminiRequirementsParser);
+    const colorInputs = resolvedColors.filter((c) => c.source !== 'unresolved').map((c) => (c.source === 'ai' ? c.hex : c.input.trim()));
+    const inputNotes = [...parsedRequirements.notes, ...unresolvedColors.map((input) => `Could not interpret the colour "${input}"; ${colorInputs.length ? 'it was ignored.' : 'the selected style palette was used instead.'}`)];
     const submittedOpenings: LayoutOpening[] = Array.isArray(openings) ? openings.slice(0, 30).filter((o: any) => ['north', 'south', 'east', 'west'].includes(o?.wall) && Number.isFinite(Number(o.start)) && Number.isFinite(Number(o.end)) && Number(o.end) > Number(o.start) && ['door', 'window'].includes(o.type)).map((o: any) => {
       const span = ['north', 'south'].includes(o.wall) ? w : l;
       return { wall: o.wall, type: o.type, start: Math.max(0, Math.min(span, Number(o.start))), end: Math.max(0, Math.min(span, Number(o.end))) } as LayoutOpening;
@@ -469,7 +522,7 @@ app.post('/api/gemini/interior', async (req, res) => {
     const defaults = defaultRoomOpenings(w, l);
     const validOpenings = [...submittedOpenings, ...defaults.filter((fallback) => !submittedOpenings.some((opening) => opening.type === fallback.type))];
 
-    const algorithmicBaseline = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements, seedNum);
+    const algorithmicBaseline = generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, colorInputs, cleanedRequirements, parsedRequirements, seedNum);
 
     const styleDirection: Record<string, string> = {
       modern: 'Modern Architectural: sleek silhouettes, clean lines, restrained contrast, matte metal, refined stone and tailored upholstery.',
@@ -484,8 +537,11 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
 
     const finish = (design: any) => {
       const rawSuggestions = Array.isArray(design.furniture) ? design.furniture.slice(0, 20) : [];
-      // Resolve colors from algorithmic baseline
+      // Resolve colors from the algorithmic baseline: the chosen style first, then the user's
+      // colour preferences. Gemini's palette remains a prompt input, but cannot erase the
+      // selected style when it returns a generic or stale palette.
       const colorPalette = algorithmicBaseline.colorPalette;
+      const derivedPalette = algorithmicBaseline.derivedPalette;
       const categories = ['seating', 'table', 'storage', 'bed', 'lighting', 'decor', 'fixture', 'electronics'];
       const walls = ['north', 'south', 'east', 'west', 'center'];
       let suggestions: FurnitureSuggestion[] = rawSuggestions.filter((item: any) => item && typeof item === 'object').map((item: any, index: number) => ({
@@ -508,10 +564,9 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         notes: typeof item.notes === 'string' ? item.notes.slice(0, 300) : undefined,
         estimatedPrice: typeof item.estimatedPrice === 'string' ? item.estimatedPrice.slice(0, 80) : undefined,
       }));
-      if (/no tv|without tv|no television/i.test(cleanedRequirements)) {
-        suggestions = suggestions.filter((suggestion) => !/tv|television|media console/i.test(suggestion.name));
-      }
-      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget, seedNum);
+      suggestions = applyRemovals(suggestions, parsedRequirements);
+      const requirementReport: RequirementReport = { unfit: [], notes: [] };
+      const fallbackSuggestions = createRoomFurnitureSuggestions(type, w, l, selectedStyle, colorPalette, cleanedRequirements, selectedBudget, seedNum, { derived: derivedPalette, parsed: parsedRequirements, report: requirementReport });
       const roomEssentials: Record<string, RegExp[]> = {
         bedroom: [/bed/i, /wardrobe|closet/i],
         kitchen: [/cabinet|counter/i, /refrigerator|fridge/i],
@@ -536,6 +591,19 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         !suggestions.some((suggestion) => /reading chair/i.test(suggestion.name)),
       );
       essentials.push(...requirementExtras);
+      // Style signature (`sig-`), budget (`bud-`) and requested (`req-`) pieces ride along when the AI list lacks them.
+      // Skip any that the AI list already covers (a desk it supplied counts as the requested desk).
+      const coveredByAi: Record<string, RegExp> = {
+        'req-desk': /desk/i, 'req-desk-chair': /desk|task chair|office chair/i, 'req-plant': /plant/i, 'req-lamp': /lamp/i,
+        'req-armchair': /armchair|accent chair|lounge chair/i, 'req-rug': /rug|carpet/i, 'sig-side-table': /side table/i, 'bud-side-table': /side table/i,
+        'bud-statement-lamp': /lamp/i, 'bud-accent-chair': /armchair|accent chair|lounge chair/i,
+      };
+      essentials.push(...fallbackSuggestions.filter((fallback) => {
+        const id = String(fallback.id);
+        if (!/^(sig|bud|req)-|^extra-storage$/.test(id)) return false;
+        const covered = coveredByAi[id];
+        return !suggestions.some((suggestion) => suggestion.id === fallback.id || (covered && covered.test(suggestion.name)));
+      }));
       // Kitchen + Dining gets a measured, coherent room-specific furniture set.
       // AI content still supplies palette/material direction, while free-form
       // furniture lists are not allowed to split the kitchen work zone apart.
@@ -587,10 +655,9 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
           lighting: ({ modern: 'matte black architectural metal', minimal: 'concealed warm LED and opal glass', traditional: 'aged brass and shaded glass', industrial: 'blackened steel and exposed filament', scandinavian: 'paper and opal glass', japandi: 'natural fiber and warm ceramic' } as Record<string, string>)[selectedStyle],
         };
         const styleColors: Record<string, string> = { seating: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6', decor: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', lighting: colorPalette.find((swatch: any) => swatch.role === 'accent')?.hex || '#7d8372', table: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', storage: colorPalette.find((swatch: any) => swatch.role === 'flooring')?.hex || '#b99b78', bed: colorPalette.find((swatch: any) => swatch.role === 'secondary')?.hex || '#d8d1c6' };
-        const grade = /75|luxury/i.test(selectedBudget) ? 'bespoke' : /35|60|high/i.test(selectedBudget) ? 'premium' : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? 'essential tier' : 'considered tier';
-        const sizeFactor = /75|luxury/i.test(selectedBudget) ? 1.07 : /35|60|high/i.test(selectedBudget) ? 1.035 : /(^|\D)(5,000|10,000)|essential/i.test(selectedBudget) ? .97 : 1;
-        const priceFactor = grade === 'bespoke' ? 5 : grade === 'premium' ? 2.4 : grade === 'essential tier' ? .62 : 1;
-        const typicalPrice: Record<string, number> = { seating: 1100, table: 800, storage: 900, bed: 1400, fixture: 550, electronics: 1100, lighting: 350, decor: 180 };
+        const tier = getBudgetTier(selectedBudget);
+        const grade = tier.gradeLabel;
+        const sizeFactor = tier.sizeFactor;
         for (const suggestion of completedSuggestions) {
           if (!suggestion.form) suggestion.form = suggestion.name;
           if (!suggestion.notes) suggestion.notes = `${styleNames[selectedStyle]} aesthetic`;
@@ -599,9 +666,11 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
           const styleMaterial = materialByCategory[suggestion.category];
           if (typeKey !== 'kitchenDining' && styleMaterial && !suggestion.material) suggestion.material = `${styleMaterial} · ${grade}`;
           else if (suggestion.material && !suggestion.material.includes(grade)) suggestion.material = `${suggestion.material} · ${grade}`;
-          suggestion.color = suggestion.color || styleColors[suggestion.category];
-          const middle = Math.round((typicalPrice[suggestion.category] || 500) * priceFactor / 50) * 50;
-          suggestion.estimatedPrice = suggestion.estimatedPrice || `$${Math.round(middle * .7).toLocaleString()}–$${Math.round(middle * 1.35).toLocaleString()} ${grade}`;
+          // With user colours each piece takes its role's tone (bed/sofa lead, rugs soft,
+          // timber pieces wood); without them the generator's palette colour stands.
+          const role = derivedPalette.customised ? furnitureColorRole(suggestion) : null;
+          suggestion.color = role ? roleColorHex(role, derivedPalette) : suggestion.color || styleColors[suggestion.category];
+          suggestion.estimatedPrice = formatPriceRange(priceRange(suggestion.category, tier), grade);
         }
       }
       if (typeKey === 'dining' || typeKey === 'kitchenDining') {
@@ -624,8 +693,9 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
         const asset = matchFurnitureAsset(item);
         return { ...item, assetId: asset?.id, assetUrl: asset?.url };
       });
+      const { derivedPalette: _internalPalette, ...publicDesign } = design;
       return {
-        ...design, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
+        ...publicDesign, roomWidth: w, roomLength: l, roomType: type, style: selectedStyle, budget: selectedBudget,
         furniture, colorPalette,
         openings: validOpenings,
         generation: {
@@ -633,14 +703,16 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
           seed: seedNum,
         },
         variationSeed: seedNum,
-        finishes: getStyleRecipe(selectedStyle).defaultFinishes,
-        layoutWarnings: furniture.length < completedSuggestions.length ? ['A few requested pieces could not fit safely. Adjust the room dimensions or remove a furniture requirement.'] : [],
+        styleFinishes: getStyleRecipe(selectedStyle).defaultFinishes,
+        layoutWarnings: layoutWarnings(completedSuggestions, furniture, requirementReport.unfit.filter((label) => !suggestions.some((suggestion) => (/desk/i.test(label) ? /desk/i : /plant/i.test(label) ? /plant/i : /lamp/i.test(label) ? /lamp/i : /armchair/i.test(label) ? /armchair|accent chair|lounge chair/i : /rug/i.test(label) ? /rug|carpet/i : /reading/i.test(label) ? /reading/i : /storage|cabinet/i.test(label) ? /storage|cabinet|shelv/i : /^$/).test(suggestion.name)))),
+        estimatedTotal: `${formatPriceRange(totalPriceRange(furniture, getBudgetTier(selectedBudget)))} ${getBudgetTier(selectedBudget).gradeLabel}`,
         designSuggestions: Array.isArray(design.designSuggestions) ? design.designSuggestions.filter((suggestion: unknown) => typeof suggestion === 'string').slice(0, 10) : [],
         lightingSuggestions: typeof design.lightingSuggestions === 'string' && design.lightingSuggestions.trim()
           ? design.lightingSuggestions
           : algorithmicBaseline.lightingSuggestions,
         designPhilosophy: algorithmicBaseline.designPhilosophy,
         materialFinishes: algorithmicBaseline.materialFinishes,
+        ...(inputNotes.length || requirementReport.notes.length ? { inputNotes: [...inputNotes, ...requirementReport.notes] } : {}),
         additionalRequirements: cleanedRequirements, preferredColors: cleanedColors,
       };
     };
@@ -658,7 +730,7 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
       });
     } catch (aiErr: any) {
       console.log('[INTERIO Engine] Synthesizing interior palette using architectural curation matrix.');
-      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
+      return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, colorInputs, cleanedRequirements, parsedRequirements)));
     }
 
     let parsed: any;
@@ -673,7 +745,7 @@ Return STRICT JSON only. Fit realistic furniture to this room and budget. Do not
       return res.json(finish(parsed));
     }
 
-    return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, cleanedColors, cleanedRequirements)));
+    return res.json(finish(generateAlgorithmicInterior(w, l, selectedStyle, selectedBudget, type, colorInputs, cleanedRequirements, parsedRequirements)));
   } catch (err: any) {
     console.log('[INTERIO Engine] Interior curation routed through architectural matrix.');
     return res.status(500).json({ error: err?.message || 'Could not generate a valid furniture layout for these room constraints.' });
@@ -4364,7 +4436,7 @@ Return STRICT JSON ONLY conforming to this format:
   }
 });
 
-function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string, preferredColors: string[] = [], requirements = '', seed = 0) {
+function generateAlgorithmicInterior(w: number, l: number, style: string, budget: string, roomType: string, preferredColors: string[] = [], requirements = '', parsedRequirements?: ParsedRequirements, seed = 0) {
   const stylesMap: Record<string, { palette: any[]; philosophy: string; finishes: string }> = {
     modern: {
       philosophy: 'Crisp linear geometry, understated monolithic silhouettes, and balanced spatial tension allowing architectural features to breathe.',
@@ -4435,16 +4507,42 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
   };
 
   const currentTheme = stylesMap[style] || stylesMap.modern;
-  const namedColors: Record<string, string> = {
-    sage: '#879477', 'sage green': '#879477', terracotta: '#b86f52', 'warm oak': '#bd9367', oak: '#bd9367', navy: '#34445b', cream: '#efe8dc', beige: '#d8cdbb', charcoal: '#414449', olive: '#777b53', blue: '#6d8fa5', blush: '#d6a6a2', walnut: '#73533d',
+  const userColors = preferredColors.map((value) => resolveColor(value)).filter((c) => c.source !== 'unresolved');
+  const budgetAccent = getBudgetTier(budget).accentHex;
+  const roomFlooring: Record<string, { hex: string; name: string }> = {
+    modern: { hex: '#C9C6BF', name: 'Honed Architectural Stone' }, minimal: { hex: '#D8D2C6', name: 'Warm Limestone' },
+    traditional: { hex: '#B6A58B', name: 'Classic Marble' }, industrial: { hex: '#68645E', name: 'Sealed Concrete' },
+    scandinavian: { hex: '#DED9CC', name: 'Pale Terrazzo' }, japandi: { hex: '#A69B89', name: 'Clay Terrazzo' },
   };
-  const resolvedPreferences = preferredColors.map((value) => ({ value: value.trim().toLowerCase(), hex: /^#[0-9a-f]{6}$/i.test(value) ? value : namedColors[value.trim().toLowerCase()] })).filter((item) => item.hex);
-  const palette = currentTheme.palette.map((swatch: any) => {
-    const match = resolvedPreferences.find(({ value }) => swatch.role === 'flooring' ? /oak|wood|timber|floor|bamboo|cedar|walnut/.test(value) : swatch.role === 'secondary' ? /cream|beige|linen|white|neutral|oatmeal/.test(value) : swatch.role === 'accent' ? !/oak|wood|timber|floor|bamboo|cedar|walnut|cream|beige|linen|white|neutral|oatmeal/.test(value) : false);
-    return match ? { ...swatch, hex: match.hex } : swatch;
+  const themePalette = currentTheme.palette.map((swatch: any) => {
+    if (/kitchen|bath|powder/i.test(roomType) && swatch.role === 'flooring') return { ...swatch, ...roomFlooring[style] };
+    if (swatch.role === 'accent' && budgetAccent) return { ...swatch, hex: budgetAccent };
+    return swatch;
   });
+  // User colours drive the palette from hue/lightness (see colorTheory); with
+  // none the style palette is returned untouched, exactly as before.
+  const themeHex = (role: string, fallback: string) => themePalette.find((swatch: any) => swatch.role === role)?.hex || fallback;
+  const colorBase: StyleColorBase = {
+    wall: themeHex('wall', '#f4f1ea'), floor: themeHex('flooring', '#d6c3a5'), neutral: themeHex('secondary', '#d8d1c6'),
+    wood: themeHex('flooring', '#b99b78'), accent: themeHex('accent', '#7d8372'), trim: '#fbfaf7',
+  };
+  const derived = derivePalette(userColors.map((c) => c.hex), colorBase, getStyleProfile(style).colorTweak);
+  const userName = (hex: string) => userColors.find((c) => c.hex === normalizeHex(hex))?.name || nearestColorName(hex);
+  const palette = derived.customised ? themePalette.map((swatch: any) => {
+    switch (swatch.role) {
+      case 'wall': return { ...swatch, hex: derived.wall, name: `${nearestColorName(derived.wall)} Wall`, description: 'Soft backdrop tinted from your chosen colour' };
+      case 'flooring': return { ...swatch, hex: derived.floor, name: `${nearestColorName(derived.floor)} Flooring`, description: 'Light floor tone that lets the main colour stand out' };
+      case 'accent': return { ...swatch, hex: derived.accent, name: `${userName(derived.accent)} Accent`, description: 'Supporting accent for cushions, art and decor' };
+      case 'primary': return { ...swatch, hex: derived.hero, name: `${userName(derived.hero)} Statement`, description: 'Your lead colour on the bed, sofa and key upholstery' };
+      case 'secondary': return { ...swatch, hex: derived.neutral, name: `${nearestColorName(derived.neutral)} Neutral`, description: 'Calm neutral for rugs, joinery and balance' };
+      default: return swatch;
+    }
+  }) : themePalette;
+  const colorStory = derived.customised
+    ? ` Colour story: ${userName(derived.hero)} leads on the bed, sofa and soft furnishings, with ${nearestColorName(derived.wall).toLowerCase()} walls and a ${nearestColorName(derived.floor).toLowerCase()} floor.`
+    : '';
 
-  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget, seed);
+  const furniture = createRoomFurnitureSuggestions(roomType, w, l, style as any, palette, requirements, budget, seed, { derived, parsed: parsedRequirements });
 
   return {
     roomWidth: w,
@@ -4453,13 +4551,47 @@ function generateAlgorithmicInterior(w: number, l: number, style: string, budget
     style,
     budget,
     designPhilosophy: currentTheme.philosophy,
-    materialFinishes: currentTheme.finishes,
-    lightingSuggestions: `Integrate a three-tier circadian lighting scheme: 1) Ambient illumination via indirect 2700K LED cove grazing across ceiling planes; 2) Focal statement luminaire placed at golden-ratio centroid; 3) Low-glare directional task downlights highlighting architectural artwork. Ensure all circuits support 0-10V flicker-free dimming.`,
+    materialFinishes: `${currentTheme.finishes} ${budgetFinish(budget)}${colorStory}`,
+    lightingSuggestions: styleLighting(style, roomType, budget),
     colorPalette: palette,
+    derivedPalette: derived,
     furniture,
     preferredColors,
     additionalRequirements: requirements,
   };
+}
+
+/** Names the requested pieces that did not fit; otherwise the generic note when anything was dropped. */
+function layoutWarnings(wanted: { id?: string; name: string }[], placed: { name: string }[], unfit: string[] = []): string[] {
+  const unfitNote = unfit.length ? [`There was not enough room for: ${[...new Set(unfit)].join(', ')}. Try a larger room or remove a furniture requirement.`] : [];
+  if (placed.length >= wanted.length) return unfitNote;
+  const placedNames = new Set(placed.map((item) => item.name));
+  const requested = wanted.filter((item) => /^req-|^extra-storage$|^reading-chair$/.test(String(item.id)) && !placedNames.has(item.name)).map((item) => item.name);
+  return requested.length
+    ? [`There was not enough room for: ${[...new Set([...requested, ...unfit])].join(', ')}. Try a larger room or remove a furniture requirement.`]
+    : [...unfitNote, 'A few requested pieces could not fit safely. Adjust the room dimensions or remove a furniture requirement.'];
+}
+
+function budgetFinish(budget: string) {
+  return getBudgetTier(budget).finishNote;
+}
+
+function styleLighting(style: string, roomType: string, budget: string) {
+  const roomTask = /kitchen/i.test(roomType) && /dining/i.test(roomType) ? 'continuous under-cabinet task light for the kitchen and a warm dimmable pendant centered over the dining table'
+    : /kitchen/i.test(roomType) ? 'continuous under-cabinet task light and bright, even worktop illumination'
+    : /study|office/i.test(roomType) ? 'glare-controlled desk task light and an even ambient layer'
+    : /dining/i.test(roomType) ? 'a warm dimmable pendant centered over the dining table and soft ambient fill'
+    : /bedroom/i.test(roomType) ? 'warm bedside reading lights with low-glare indirect ambient light'
+    : 'layered ambient light with focused task and reading light';
+  const styleLayer = ({
+    modern: 'Use clean recessed lines, concealed sources and restrained architectural accents.',
+    minimal: 'Keep fittings discreet, use concealed linear light and avoid visual clutter.',
+    traditional: 'Use warm brass or bronze fittings, shaded lamps and a graceful central fixture.',
+    industrial: 'Use blackened metal pendants, exposed fittings and directional task lamps.',
+    scandinavian: 'Use soft 2700K light, paper or opal diffusers and cozy pools of illumination.',
+    japandi: 'Use warm low-level light, natural shade materials and quiet wall grazing.',
+  } as Record<string, string>)[style] || 'Use warm, layered architectural lighting.';
+  return `${roomTask}. ${styleLayer} ${budgetFinish(budget)}`;
 }
 
 // ----------------------------------------------------

@@ -1,7 +1,54 @@
-import type { ColorSwatch, DesignStyle } from '../types';
-import type { FurnitureSuggestion } from './layoutOptimizer';
+import type { ColorSwatch, DesignStyle, FurnitureColorRole } from '../types';
+import { defaultRoomOpenings, optimizeFurnitureLayout, roomDoorClearance, type FurnitureSuggestion } from './layoutOptimizer';
 import { getStyleRecipe, normalizeRoomType } from './interiorStyles';
 import { selectArrangement, ArrangementTemplate } from './interiorArrangements';
+import { nearestColorName } from './colorResolver';
+import { shade, type DerivedPalette } from './colorTheory';
+import { getStyleProfile, signaturePiecesFor, type RoomKind } from './styleProfiles';
+import { applyRemovals, parseRequirements, type ParsedRequirements, type RequirementItem } from './requirements';
+import { extrasFor, getBudgetTier } from './budgetTiers';
+
+/** Filled in by the generator: requested pieces that did not fit and notes on adjustments it could not make. */
+export interface RequirementReport {
+  unfit: string[];
+  notes: string[];
+}
+
+/** Optional inputs from the colour, requirements and budget engines. */
+export interface ProgramOptions {
+  /** Palette derived from the user's colours; pieces take their role's tone when it is customised. */
+  derived?: DerivedPalette;
+  parsed?: ParsedRequirements;
+  report?: RequirementReport;
+}
+
+/** Hex a piece takes for a colour role under a customised palette. */
+export function roleColorHex(role: FurnitureColorRole, derived: DerivedPalette): string {
+  switch (role) {
+    case 'hero': return derived.hero;
+    case 'soft': return derived.heroSoft;
+    case 'wood': return derived.wood;
+    case 'accent': return derived.accent;
+    default: return shade(derived.neutral, 0.5);
+  }
+}
+
+/**
+ * Colour role for a piece: the one it was tagged with, else inferred from its
+ * name/category (used for AI-supplied pieces). Fixtures and appliances return
+ * null so they keep their own finish.
+ */
+export function furnitureColorRole(piece: { name: string; category: string; colorRole?: FurnitureColorRole }): FurnitureColorRole | null {
+  if (piece.colorRole) return piece.colorRole;
+  const name = piece.name.toLowerCase();
+  if (piece.category === 'bed' || /bed|sofa|couch|sectional|loveseat/.test(name)) return 'hero';
+  if (/rug|carpet/.test(name)) return 'soft';
+  if (piece.category === 'seating') return /armchair|accent|lounge|reading/.test(name) ? 'accent' : 'soft';
+  if (piece.category === 'table' || piece.category === 'storage') return 'wood';
+  if (piece.category === 'lighting') return 'neutral';
+  if (piece.category === 'decor') return 'accent';
+  return null;
+}
 
 export interface RoomProgramResult {
   suggestions: FurnitureSuggestion[];
@@ -20,21 +67,20 @@ export function buildRoomProgram(
   palette: ColorSwatch[],
   requirements = '',
   budget = '',
-  seed = 0
+  seed = 0,
+  options: ProgramOptions = {}
 ): RoomProgramResult {
   const { width, depth } = size;
+  const { derived, report } = options;
   const roomKey = normalizeRoomType(roomType);
   const recipe = getStyleRecipe(style);
   const pref = requirements.toLowerCase();
   const arrangement = selectArrangement(roomKey, width, depth, recipe, seed);
 
-  const budgetTier = /75|luxury/i.test(budget)
-    ? 'bespoke'
-    : /35|60|high/i.test(budget)
-    ? 'premium'
-    : /(^|\D)(5,000|10,000)|essential/i.test(budget)
-    ? 'essential'
-    : 'considered';
+  const tier = getBudgetTier(budget);
+  const budgetTier = tier.finishLabel;
+  const parsed = options.parsed ?? parseRequirements(requirements);
+  const profile = getStyleProfile(style);
 
   const getColor = (role: ColorSwatch['role'], fallback: string) =>
     palette.find((item) => item.role === role)?.hex || fallback;
@@ -239,53 +285,152 @@ export function buildRoomProgram(
     });
   }
 
-  // Handle explicit reading nook/chair request
-  if (/reading nook|reading chair/i.test(pref) && !suggestions.some((s) => s.id === 'reading-chair')) {
-    suggestions.push({
-      id: 'reading-chair',
-      name: 'Reading Chair',
-      category: 'seating',
-      role: 'accent-chair',
-      form: recipe.forms['accent-chair'],
-      x: Math.max(0.16, width * 0.12),
-      y: Math.max(0.16, depth * 0.6),
-      width: 0.78 * scale,
-      depth: 0.78 * scale,
-      height: 0.82,
-      preferredWall: 'west',
-      facing: 'room',
-      material: `${recipe.materials.upholstery} · ${budgetTier} finish`,
-      color: accentColor,
-      clearance: 0.25,
-    });
+  // ---- Colour: with user colours each piece takes its role's tone (bed/sofa lead, rugs soft,
+  // timber pieces wood); without them the style palette colours chosen above stand.
+  const toned = (material: string, hex: string) => `${nearestColorName(hex)}-toned ${material.charAt(0).toLowerCase()}${material.slice(1)}`;
+  const applyColour = (piece: FurnitureSuggestion) => {
+    const role = furnitureColorRole(piece);
+    if (role) piece.colorRole = role;
+    if (derived?.customised && role) {
+      piece.color = roleColorHex(role, derived);
+      if (piece.material && (role === 'hero' || role === 'soft' || role === 'accent')) {
+        const [base, ...rest] = piece.material.split(' · ');
+        piece.material = [toned(base, piece.color), ...rest].join(' · ');
+      }
+    }
+  };
+  suggestions.forEach(applyColour);
+
+  // Helpers for the optional pieces below (signature, budget and requested extras).
+  // Added pieces (signature, budget extras, requests) get a believable height so 3D proportions are right.
+  const heightFor = (category: FurnitureSuggestion['category'], name: string) =>
+    category === 'bed' ? 1.0
+    : category === 'seating' ? (/stool|ottoman|pouf/i.test(name) ? 0.45 : 0.85)
+    : category === 'table' ? (/coffee|side|bedside/i.test(name) ? 0.45 : 0.75)
+    : category === 'storage' ? (/bookcase|wardrobe|shelf/i.test(name) ? 1.8 : 0.8)
+    : category === 'lighting' ? (/table|desk/i.test(name) ? 0.5 : 1.55)
+    : category === 'decor' ? (/rug|carpet/i.test(name) ? 0.02 : /plant/i.test(name) ? 1.2 : 0.5)
+    : 0.8;
+  const item = (
+    id: string, name: string, category: FurnitureSuggestion['category'], x: number, y: number, itemW: number, itemD: number,
+    preferredWall: FurnitureSuggestion['preferredWall'], material: string, itemColor: string | FurnitureColorRole, clearance = 0.2,
+  ): FurnitureSuggestion => {
+    const colorRole = itemColor.startsWith('#') ? undefined : itemColor as FurnitureColorRole;
+    const hex = colorRole ? (derived?.customised ? roleColorHex(colorRole, derived) : ({ hero: fabricColor, soft: fabricColor, wood: timberColor, accent: accentColor, neutral: primaryColor } as const)[colorRole]) : itemColor;
+    const baseMaterial = derived?.customised && (colorRole === 'hero' || colorRole === 'soft' || colorRole === 'accent') ? toned(material, hex) : material;
+    return {
+      id, name, category,
+      x: Math.max(0, Math.min(width - itemW * scale, x)), y: Math.max(0, Math.min(depth - itemD * scale, y)),
+      width: itemW * scale, depth: itemD * scale, height: heightFor(category, name), preferredWall, material: `${baseMaterial} · ${budgetTier} finish`,
+      color: hex, ...(colorRole ? { colorRole } : {}), clearance,
+    };
+  };
+  const fitW = (fraction: number, preferred: number, min = 0.45) => Math.max(Math.min(min, width), Math.min(width * fraction, preferred));
+  const fitD = (fraction: number, preferred: number, min = 0.4) => Math.max(Math.min(min, depth), Math.min(depth * fraction, preferred));
+  const finish = recipe.materials;
+  const roomKind: RoomKind | null = roomKey === 'bedroom' || roomKey === 'masterBedroom' ? 'bedroom'
+    : roomKey === 'kitchen' || roomKey === 'bathroom' || roomKey === 'kitchenDining' ? null
+    : roomKey === 'dining' ? 'dining' : roomKey === 'study' || roomKey === 'homeOffice' ? 'study' : 'living';
+  const placeOnWall = (piece: { wall: 'north' | 'south' | 'east' | 'west'; along: number; width: number; depth: number }) => {
+    const along = (span: number, size: number) => Math.max(0.1, Math.min(span - size - 0.1, piece.along * span - size / 2));
+    return {
+      x: piece.wall === 'west' ? 0.12 : piece.wall === 'east' ? width - piece.width - 0.12 : along(width, piece.width),
+      y: piece.wall === 'north' ? 0.12 : piece.wall === 'south' ? depth - piece.depth - 0.12 : along(depth, piece.depth),
+    };
+  };
+  const materialOf = (key: 'upholstery' | 'wood' | 'stone' | 'metal') => recipe.materials[key] ?? profile.materials[key];
+
+  // Optional pieces: the style's signature pieces plus whatever the budget tier adds,
+  // only where the room can take them and never in accessible layouts (fewer obstacles).
+  if (roomKind && !parsed.accessibility) {
+    const optional = [...(tier.signature ? signaturePiecesFor(profile, roomKind, width, depth) : []), ...extrasFor(tier, roomKind, width, depth)];
+    for (const piece of optional) {
+      if (suggestions.some((existing) => existing.id === piece.id)) continue;
+      const { x, y } = placeOnWall(piece);
+      suggestions.push(item(piece.id, piece.name, piece.category, x, y, piece.width, piece.depth, piece.wall, materialOf(piece.material), piece.role, 0.2));
+    }
   }
 
-  // Handle extra storage request
-  if (
-    /extra storage|more storage/i.test(pref) &&
-    !suggestions.some((piece) => piece.category === 'storage')
-  ) {
-    const storeW = Math.min(width * 0.35, 1.2) * scale;
-    suggestions.push({
-      id: 'extra-storage',
-      name: 'Storage Cabinet',
-      category: 'storage',
-      role: 'media-console',
-      form: recipe.forms['media-console'],
-      x: (width - storeW) / 2,
-      y: depth - 0.58,
-      width: storeW,
-      depth: 0.42 * scale,
-      height: 0.78,
-      preferredWall: 'south',
-      facing: 'wall',
-      material: `${recipe.materials.wood} · ${budgetTier} finish`,
-      color: timberColor,
-      clearance: 0.2,
+  // The generator's role-based ids map onto the ids the style and budget rules were written for.
+  const legacyId = (piece: FurnitureSuggestion): string => {
+    const role = piece.role;
+    if (roomKind === 'living') {
+      if (role === 'floor-lamp') return 'living-lamp';
+      if (role === 'plant') return 'living-plant';
+      if (role === 'accent-chair') return 'living-chair';
+    }
+    if (roomKind === 'dining' && role === 'sideboard') return 'dining-sideboard';
+    return String(piece.id);
+  };
+  const keep = suggestions.filter((piece) => !profile.avoid.includes(legacyId(piece)));
+  suggestions.length = 0;
+  suggestions.push(...keep);
+
+  // Budget: lean tiers leave out optional extras unless the user asked for them.
+  const requestedFor: Record<string, RequirementItem> = { 'living-plant': 'plants', 'living-lamp': 'lamp', 'living-chair': 'armchair', 'dining-sideboard': 'storage' };
+  const wants = (wanted: RequirementItem) => parsed.add.includes(wanted);
+  if (tier.skipPieces) {
+    const kept = suggestions.filter((piece) => {
+      const id = legacyId(piece);
+      if (!tier.skipPieces!.test(id)) return true;
+      const requested = /rug$/.test(id) ? 'rug' : requestedFor[id];
+      return !!requested && wants(requested);
     });
+    suggestions.length = 0;
+    suggestions.push(...kept);
   }
 
-  return { suggestions, arrangement };
+  // Requirements: add what was asked for, but only where it fits without pushing
+  // out a piece the room already has; whatever does not fit is reported.
+  const wet = roomKey === 'kitchen' || roomKey === 'bathroom' || roomKey === 'kitchenDining';
+  const study = roomKey === 'study' || roomKey === 'homeOffice';
+  const trialRoom = { width, depth, openings: defaultRoomOpenings(width, depth), doorClearance: roomDoorClearance(width, depth) };
+  const placedIds = (list: FurnitureSuggestion[]) => new Set(optimizeFurnitureLayout(list, trialRoom).map((placed) => placed.id));
+  const keepsAll = (before: Set<string>, after: Set<string>) => [...before].every((id) => after.has(id));
+  const has = (pattern: RegExp) => suggestions.some((piece) => pattern.test(piece.name) || pattern.test(String(piece.id)));
+  let placedSoFar: Set<string> | null = null;
+  const tryAdd = (label: string, group: FurnitureSuggestion[]) => {
+    placedSoFar ??= placedIds(suggestions);
+    const after = placedIds([...suggestions, ...group]);
+    if (keepsAll(placedSoFar, after) && group.every((piece) => after.has(String(piece.id)))) { suggestions.push(...group); placedSoFar = after; }
+    else report?.unfit.push(label);
+  };
+  if (wants('reading-nook') && !wet && !suggestions.some((piece) => piece.id === 'reading-chair')) {
+    tryAdd('Reading Chair', [item('reading-chair', 'Reading Chair', 'seating', 0.16, depth * 0.58, 0.78, 0.78, 'west', finish.upholstery, 'accent', 0.22)]);
+  }
+  if (wants('desk') && !wet && !study && !has(/desk/i)) {
+    const spot = placeOnWall({ wall: 'west', along: 0.5, width: 1.2, depth: 0.6 });
+    tryAdd('Compact Work Desk', [
+      item('req-desk', 'Compact Work Desk', 'table', spot.x, spot.y, 1.2, 0.6, 'west', finish.wood, 'wood', 0.18),
+      { ...item('req-desk-chair', 'Desk Chair', 'seating', spot.x + 1.3, spot.y + 0.05, 0.5, 0.5, 'center', finish.upholstery, 'soft', 0.16), rotation: 270, relativeTo: 'req-desk', relativeSide: 'east' },
+    ]);
+  }
+  if (wants('plants') && !wet && !has(/plant/i)) tryAdd('Potted Floor Plant', [item('req-plant', 'Potted Floor Plant', 'decor', width - 0.62, depth - 0.62, 0.42, 0.42, 'east', 'Glazed ceramic and foliage', 'accent', 0)]);
+  if (wants('lamp') && !wet && !has(/lamp/i)) tryAdd('Accent Floor Lamp', [item('req-lamp', 'Accent Floor Lamp', 'lighting', width - 0.62, 0.22, 0.42, 0.42, 'east', 'Brushed metal and opal glass', 'neutral', 0.12)]);
+  if (wants('armchair') && !wet && !has(/armchair|accent chair/i)) tryAdd('Accent Armchair', [item('req-armchair', 'Accent Armchair', 'seating', Math.max(0.12, width - 0.98), depth * 0.34, 0.82, 0.82, 'east', finish.upholstery, 'accent', 0.25)]);
+  if (wants('rug') && !wet && !has(/rug|carpet/i)) {
+    tryAdd(profile.names.rug, [item('req-rug', profile.names.rug, 'decor', (width - fitW(0.7, 3, 1.5)) / 2, Math.max(0.5, depth * 0.3), fitW(0.7, 3, 1.5), fitD(0.45, 2.2, 1.3), 'center', finish.upholstery, 'soft', 0)]);
+  }
+  if (wants('storage') && !suggestions.some((piece) => piece.id === 'extra-storage')) {
+    tryAdd('Storage Cabinet', [item('extra-storage', 'Storage Cabinet', 'storage', (width - fitW(0.35, 1.2, 0.8)) / 2, depth - 0.58, fitW(0.35, 1.2, 0.8), 0.42, 'south', finish.wood, 'wood', 0.14)]);
+  }
+  let finalPieces = applyRemovals(suggestions, parsed);
+
+  // Accessibility: widen walkways between free-standing pieces (beds, bedside tables
+  // and chairs tied to a table keep their deliberate close spacing). The widest gap
+  // that still keeps every piece in the room wins; otherwise the layout is left alone.
+  if (parsed.accessibility) {
+    const widen = (gap: number) => finalPieces.map((piece) => (
+      piece.category === 'decor' || piece.category === 'bed' || piece.relativeTo || /^nightstand/.test(String(piece.id)) ? piece
+        : { ...piece, clearance: Math.max(piece.clearance ?? 0.45, gap) }
+    ));
+    const before = placedIds(finalPieces);
+    const gap = [0.7, 0.55].find((candidate) => keepsAll(before, placedIds(widen(candidate))));
+    if (gap) finalPieces = widen(gap);
+    else report?.notes.push('This room is too small to widen walkways without removing furniture, so the standard spacing was kept.');
+  }
+
+  return { suggestions: finalPieces, arrangement };
 }
 
 /**
@@ -300,7 +445,8 @@ export function createRoomFurnitureSuggestions(
   palette: ColorSwatch[],
   requirements = '',
   budget = '',
-  seed = 0
+  seed = 0,
+  options: ProgramOptions = {}
 ): FurnitureSuggestion[] {
   const { suggestions } = buildRoomProgram(
     roomType,
@@ -309,7 +455,8 @@ export function createRoomFurnitureSuggestions(
     palette,
     requirements,
     budget,
-    seed
+    seed,
+    options
   );
   return suggestions;
 }
