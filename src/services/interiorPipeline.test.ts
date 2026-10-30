@@ -48,15 +48,16 @@ const LEGACY_PALETTE = [
   { hex: '#C2A382', name: 'e', role: 'flooring' as const },
 ];
 
-test('5.1 every original piece (id, position, size, colour, material) is unchanged for each style and room', () => {
+test('5.1 every base-generator piece (id, position, size, colour, material) is unchanged for each style and room', () => {
   assert.equal(Object.keys(legacy).length, 48);
   for (const [key, original] of Object.entries(legacy)) {
     const [style, room] = key.split('|');
-    // Intentional additions only: style signature / budget pieces, and the minimalist's omitted plant.
-    const current = createRoomFurnitureSuggestions(room, 5, 4.5, style as never, LEGACY_PALETTE, '', MID)
-      .filter((piece) => !/^(sig|bud)-/.test(String(piece.id)))
-      .map(({ colorRole: _role, ...piece }) => piece);
-    const expected = original.filter((piece) => !(style === 'minimal' && piece.id === 'living-plant'));
+    // Intentional differences only: style signature / budget pieces, the colour role tag, and the
+    // minimalist living room's omitted plant. Everything else the base generator makes is untouched.
+    const current = JSON.parse(JSON.stringify(createRoomFurnitureSuggestions(room, 5, 4.5, style as never, LEGACY_PALETTE, '', MID)))
+      .filter((piece: Record<string, unknown>) => !/^(sig|bud)-/.test(String(piece.id)))
+      .map(({ colorRole: _role, ...piece }: Record<string, unknown>) => piece);
+    const expected = original.filter((piece) => !(style === 'minimal' && /living/i.test(room) && piece.role === 'plant'));
     const byId = (list: Record<string, unknown>[]) => [...list].sort((a, b) => String(a.id).localeCompare(String(b.id)));
     assert.deepEqual(byId(current), byId(expected), key);
   }
@@ -119,7 +120,7 @@ test('5.2 colour matrix: lead colour reaches the key piece, contrast holds, garb
     }
     assert.ok(contrastRatio(lead, swatch(r, 'flooring')) >= 1.1, `${label}: lead vs floor`);
     assert.notEqual(swatch(r, 'wall'), swatch(r, 'flooring'), `${label}: wall differs from floor`);
-    const keyPiece = roomType === 'Bedroom' ? 'bed' : roomType === 'Living Room' ? 'living-sofa' : null;
+    const keyPiece = roomType === 'Bedroom' ? 'bed' : roomType === 'Living Room' ? 'sofa' : null;
     if (keyPiece) assert.equal(r.furniture.find((f) => f.id === keyPiece)?.color?.toLowerCase(), lead, `${label}: ${keyPiece} takes the lead colour`);
     assert.ok(!r.inputNotes?.some((n) => /Could not interpret/.test(n)), `${label}: nothing to report`);
   }
@@ -139,8 +140,8 @@ test('5.2 requirement flags are honoured or reported, and never remove other pie
   const run = (req: string, room = 'Living Room') => generate({ roomType: room, roomWidth: 6, roomLength: 5, additionalRequirements: req });
 
   const noTv = await run('No TV please');
-  assert.ok(!ids(noTv).includes('living-console') && ids(living).includes('living-console'));
-  assert.ok(ids(noTv).includes('living-sofa'));
+  assert.ok(!ids(noTv).includes('media-console') && ids(living).includes('media-console'));
+  assert.ok(ids(noTv).includes('sofa'));
 
   const desk = await run('I need a desk', 'Bedroom');
   assert.ok(ids(desk).includes('req-desk') || desk.layoutWarnings?.some((w) => /Compact Work Desk/.test(w)));
@@ -148,10 +149,10 @@ test('5.2 requirement flags are honoured or reported, and never remove other pie
   const access = await run('step-free for a wheelchair user');
   assert.ok(!ids(access).some((id) => /rug/.test(id)));
   assert.ok(access.inputNotes?.some((n) => /Accessibility/.test(n)));
-  assert.ok(ids(access).includes('living-sofa'));
+  assert.ok(ids(access).includes('sofa'));
 
   const dog = await run('we have a dog');
-  assert.ok(!ids(dog).includes('living-lamp') && !ids(dog).includes('living-plant'));
+  assert.ok(!ids(dog).includes('floor-lamp') && !ids(dog).includes('plant'));
 
   const storage = await run('extra storage');
   assert.ok(ids(storage).includes('extra-storage') || storage.layoutWarnings?.some((w) => /Storage Cabinet/.test(w)));

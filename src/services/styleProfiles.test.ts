@@ -31,12 +31,12 @@ test('every style has a complete profile', () => {
 
 test('styles differ in names, materials and at least one piece in the same room', () => {
   const sets = STYLES.map((s) => createRoomFurnitureSuggestions('Living Room', 5, 4.5, s, palette, '', budget));
-  const sofas = new Set(sets.map((set) => set.find((p) => p.id === 'living-sofa')?.name));
+  const sofas = new Set(sets.map((set) => set.find((p) => p.role === 'sofa')?.name));
   assert.equal(sofas.size, 6);
-  const woods = new Set(sets.map((set) => set.find((p) => p.id === 'living-coffee')?.material));
+  const woods = new Set(sets.map((set) => set.find((p) => p.role === 'coffee-table')?.material));
   assert.equal(woods.size, 6);
   assert.ok(STYLES.filter((s) => s !== 'minimal').every((s, i) => sets[STYLES.indexOf(s)].some((p) => p.id.startsWith('sig-')), `signature pieces missing`));
-  assert.ok(!sets[STYLES.indexOf('minimal')].some((p) => p.id === 'living-plant'), 'minimal leaves out the plant');
+  assert.ok(!sets[STYLES.indexOf('minimal')].some((p) => p.role === 'plant'), 'minimal leaves out the plant');
 });
 
 test('signature pieces are skipped in small rooms, essential budgets, and wet rooms', () => {

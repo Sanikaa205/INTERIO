@@ -8,8 +8,18 @@ const palette = [
   { hex: '#C2A382', name: 'f', role: 'flooring' as const },
 ];
 const MID = '$15,000 - $25,000', LEAN = '$5,000 - $10,000', RICH = '$75,000+';
+// The generator names pieces by role ('sofa', 'media-console'); these tests keep the long-standing
+// per-room names so each assertion still reads as the behaviour it protects.
+const LIVING_IDS: Record<string, string> = { sofa: 'living-sofa', 'media-console': 'living-console', 'floor-lamp': 'living-lamp', plant: 'living-plant', 'accent-chair': 'living-chair', rug: 'living-rug', 'coffee-table': 'living-coffee' };
+const namedId = (room: string, piece: { id?: string; role?: string }) => {
+  const role = String(piece.role ?? '');
+  if (/living/i.test(room) && LIVING_IDS[role]) return LIVING_IDS[role];
+  if (/bed/i.test(room) && role === 'rug') return 'bedroom-rug';
+  if (/dining/i.test(room) && role === 'sideboard') return 'dining-sideboard';
+  return String(piece.id);
+};
 const ids = (room: string, req: string, budget = MID, w = 5, d = 4.5, style: 'modern' | 'traditional' = 'modern', report?: RequirementReport) =>
-  createRoomFurnitureSuggestions(room, w, d, style, palette, req, budget, undefined, undefined, report).map((p) => String(p.id));
+  createRoomFurnitureSuggestions(room, w, d, style, palette, req, budget, 0, { report }).map((p) => namedId(room, p));
 
 test('TV requests: removal phrasings drop the console, a desk request adds a desk', () => {
   assert.ok(ids('Living Room', '').includes('living-console'));

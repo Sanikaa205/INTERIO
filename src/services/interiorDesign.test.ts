@@ -257,7 +257,7 @@ test('user colours reach the pieces by role, and no colours leaves the style pal
   assert.equal(plain.find((p) => p.id === 'bed')?.color, '#94A3B8');
   const pink = resolveColor('pink').hex;
   const derived = derivePalette([pink]);
-  const pieces = createRoomFurnitureSuggestions('Bedroom', 4, 4, 'modern', palette, '', '', derived);
+  const pieces = createRoomFurnitureSuggestions('Bedroom', 4, 4, 'modern', palette, '', '', 0, { derived });
   assert.equal(pieces.find((p) => p.id === 'bed')?.color, pink);
   assert.equal(pieces.find((p) => p.id === 'bed')?.colorRole, 'hero');
   assert.match(pieces.find((p) => p.id === 'bed')?.material || '', /pink-toned/i);
