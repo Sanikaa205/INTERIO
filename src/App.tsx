@@ -17,6 +17,8 @@ import {
   deleteProjectApi,
   logoutApi,
 } from './services/api';
+import { sanitizeInteriorEdits } from './services/interiorFinishes';
+import { withFurniture } from './services/furniturePlacement';
 import { NavigationSidebar } from './components/NavigationSidebar';
 import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
@@ -132,7 +134,7 @@ export default function App() {
       setActive3DTitle(project.title);
       setActiveTab('3d-studio');
     } else if (project.type === 'interior') {
-      setActive3DData(project.data as InteriorDesignResult);
+      setActive3DData(sanitizeInteriorEdits(project.data as InteriorDesignResult));
       setActive3DType('interior');
       setActive3DTitle(project.title);
       setActiveTab('3d-studio');
@@ -191,7 +193,7 @@ export default function App() {
     setActive3DData((prev) => {
       if (!prev) return prev;
       if (active3DType === 'interior') {
-        return { ...(prev as InteriorDesignResult), furniture };
+        return withFurniture(prev as InteriorDesignResult, furniture);
       }
       if (active3DType === 'renovation') {
         const recon = prev as ReconstructionData;
@@ -200,6 +202,12 @@ export default function App() {
       }
       return prev;
     });
+  };
+
+  // Finishes/palette edited in the interior 3D editor: the whole updated result
+  // replaces the current one, so Save, the 2D plan and the dashboard follow.
+  const handleInteriorChange = (next: InteriorDesignResult) => {
+    setActive3DData((prev) => (prev && active3DType === 'interior' ? next : prev));
   };
 
   const handleViewReconstruction3D = (result: ReconstructionData) => {
@@ -482,6 +490,7 @@ export default function App() {
               selectedFurnitureId={selectedFurnitureId}
               onSelectFurniture={setSelectedFurnitureId}
               onFurnitureChange={handleFurnitureChange}
+              onInteriorChange={handleInteriorChange}
             />
           )}
         </main>

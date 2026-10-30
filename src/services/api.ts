@@ -206,7 +206,7 @@ export async function generateInteriorApi(params: {
   style: string;
   budget: string;
   roomType: string;
-  preferredColors: string[];
+  preferredColors?: string[];
   additionalRequirements: string;
   openings: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
 }): Promise<InteriorDesignResult> {
