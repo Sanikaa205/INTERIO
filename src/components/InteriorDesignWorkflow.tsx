@@ -336,6 +336,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
   const [budget, setBudget] = useState<string>('$15,000 - $25,000');
   const [additionalRequirements, setAdditionalRequirements] = useState('');
   const [phaseOneJson, setPhaseOneJson] = useState('');
+  const [variationSeed, setVariationSeed] = useState<number>(0);
 
   // Synchronize if initialStyle changes from props
   useEffect(() => {
@@ -421,13 +422,26 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
         }
         const finalWidth = width > 0 ? width : roomWidth;
         const finalDepth = depth > 0 ? depth : roomLength;
-        const generated = await generateInteriorApi({ roomWidth: finalWidth, roomLength: finalDepth, style, budget, roomType, additionalRequirements, openings });
+        const nextSeed = result ? variationSeed + 1 : variationSeed;
+        setVariationSeed(nextSeed);
+        const generated = await generateInteriorApi({
+          roomWidth: finalWidth,
+          roomLength: finalDepth,
+          style,
+          budget,
+          roomType,
+          additionalRequirements,
+          openings,
+          variationSeed: nextSeed,
+        });
         setRoomWidth(generated.roomWidth);
         setRoomLength(generated.roomLength);
         setResult(generated);
         if (generated.furniture.length) onSelectFurniture?.(generated.furniture[0].id);
         return;
       }
+      const nextSeed = result ? variationSeed + 1 : variationSeed;
+      setVariationSeed(nextSeed);
       const generated = await generateInteriorApi({
         roomWidth,
         roomLength,
@@ -436,6 +450,7 @@ export const InteriorDesignWorkflow: React.FC<InteriorDesignWorkflowProps> = ({
         roomType,
         additionalRequirements,
         openings,
+        variationSeed: nextSeed,
       });
 
       setRoomWidth(generated.roomWidth);

@@ -11,8 +11,8 @@ const woodTextureCache = new Map<string, THREE.CanvasTexture>();
 
 const MATERIAL_CACHE_LIMIT = 300;
 
-function material(color: THREE.ColorRepresentation, roughness = 0.72, metalness = 0, extra = '') {
-  const key = `${String(color)}:${roughness}:${metalness}:${extra}`;
+function material(color: THREE.ColorRepresentation, roughness = 0.72, metalness = 0, extra = '', wireframe = false) {
+  const key = `${String(color)}:${roughness}:${metalness}:${extra}:${wireframe ? 'w' : 's'}`;
   let value = materialCache.get(key);
   if (!value) {
     // Dragging a colour picker creates many one-off colours; forget the oldest
@@ -20,7 +20,7 @@ function material(color: THREE.ColorRepresentation, roughness = 0.72, metalness 
     if (materialCache.size >= MATERIAL_CACHE_LIMIT) {
       for (const oldest of [...materialCache.keys()].slice(0, MATERIAL_CACHE_LIMIT / 3)) materialCache.delete(oldest);
     }
-    value = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+    value = new THREE.MeshStandardMaterial({ color, roughness, metalness, wireframe });
     materialCache.set(key, value);
   }
   return value;
@@ -109,16 +109,38 @@ export function createWoodTexture(base = '#b99569') {
   return texture;
 }
 
-export function createFloorMaterial(color: string, tile = false) {
-  const mat = material(color, tile ? 0.58 : 0.78);
+export function createFloorMaterial(color: string, tile = false, wireframe = false) {
+  const mat = material(color, tile ? 0.58 : 0.78, 0, '', wireframe);
   mat.map = createWoodTexture(color);
   mat.needsUpdate = true;
   return mat;
 }
 
-function getWood(palette: Palette, style: string) {
-  const role = palette.find((entry) => entry.role === 'secondary' || entry.role === 'flooring')?.hex;
-  return role || (style.toLowerCase().includes('japandi') ? '#b99569' : '#a98158');
+export function getWoodColor(palette: Palette, style: string): string {
+  const flooring = palette.find((entry) => entry.role === 'flooring')?.hex;
+  if (flooring) return flooring;
+  const s = style.toLowerCase();
+  if (s.includes('japandi')) return '#b99569';
+  if (s.includes('scandinavian')) return '#c8a882';
+  if (s.includes('traditional')) return '#73533d';
+  if (s.includes('industrial')) return '#5e564d';
+  return '#a98158';
+}
+
+export function getFabricColor(palette: Palette, style: string, defaultColor?: string): string {
+  if (defaultColor) return defaultColor;
+  const secondary = palette.find((entry) => entry.role === 'secondary')?.hex;
+  if (secondary) return secondary;
+  const s = style.toLowerCase();
+  if (s.includes('japandi')) return '#ded6c9';
+  if (s.includes('traditional')) return '#8c6555';
+  if (s.includes('modern')) return '#b8b9b4';
+  if (s.includes('scandinavian')) return '#ebe3d5';
+  return '#d6d2c9';
+}
+
+export function getWood(palette: Palette, style: string): string {
+  return getWoodColor(palette, style);
 }
 
 /**
@@ -151,17 +173,14 @@ export function createFurnitureModel(
   const name = item.name.toLowerCase();
   const w = Math.max(0.12, item.width);
   const d = Math.max(0.12, item.depth);
-  const h = Math.max(0.12, item.height || (item.category === 'storage' ? 0.7 : 0.8));
-  const defaultFabric = style.toLowerCase().includes('japandi') ? '#ded6c9'
-    : style.toLowerCase().includes('traditional') ? '#8c6555'
-    : style.toLowerCase().includes('modern') ? '#b8b9b4' : '#d6d2c9';
-  const accent = item.color || defaultFabric;
+  const h = Math.max(0.12, item.height ?? (item.category === 'storage' ? 0.7 : item.category === 'seating' ? 0.8 : 0.75));
+  const accent = getFabricColor(palette, style, item.color);
   const fabric = material(accent, 0.91);
   const lightFabric = material('#eee7dc', 0.94);
   const frame = frameLook(item, palette, style);
-  const wood = material(frame.color, frame.roughness);
+  const wood = material(frame.color, frame.roughness, 0, '', wireframe);
   // Legs and trim are a shade darker than the main wood; a chosen frame colour darkens with them.
-  const darkWood = frame.custom ? material(`#${new THREE.Color(frame.color).multiplyScalar(0.78).getHexString()}`, frame.roughness) : material('#483a2c', 0.48);
+  const darkWood = frame.custom ? material(`#${new THREE.Color(frame.color).multiplyScalar(0.78).getHexString()}`, frame.roughness, 0, '', wireframe) : material('#483a2c', 0.48, 0, '', wireframe);
   const metal = material('#403d39', 0.32, 0.68);
   const black = material('#262522', 0.42);
   const round = (size: [number, number, number], pos: [number, number, number], mat: THREE.Material, r = 0.035) => addBox(group, size, pos, mat, r);
@@ -191,7 +210,7 @@ export function createFurnitureModel(
     seat.rotation.x = Math.PI / 2;
     seat.position.set(0, 0.43, d * 0.12);
     group.add(seat);
-  } else if (/shower|walk-in/.test(name)) {
+  } else if (/shower/.test(name) || (/walk-in/.test(name) && !/wardrobe|closet|storage/.test(name) && item.category === 'fixture')) {
     group.userData.fixtureKind = 'shower';
     const showerHeight = Math.max(2, h);
     const tray = material('#e4e4df', 0.38);
@@ -267,21 +286,53 @@ export function createFurnitureModel(
       addCylinder(group, 0.025, 0.025, 0.05, [Math.cos(a) * Math.min(w, d) * 0.45, 0.025, Math.sin(a) * Math.min(w, d) * 0.45], black, 8);
     }
   } else if (item.category === 'seating') {
-    const chair = /chair|stool|pouf|ottoman/.test(name);
-    const seatH = Math.min(0.47, Math.max(0.34, h * 0.36));
-    const legH = seatH * 0.42;
-    legs(Math.min(0.04, w * 0.035), Math.min(0.04, d * 0.035), legH, legH / 2, darkWood);
-    round([w * 0.9, seatH * 0.36, d * 0.86], [0, legH + seatH * 0.42, 0], fabric, Math.min(0.1, seatH * 0.22));
-    const backW = chair ? w * 0.82 : w * 0.91;
-    round([backW, Math.max(0.22, h * 0.36), Math.max(0.12, d * 0.2)], [0, legH + seatH + Math.min(0.34, h * 0.25), -d * 0.34], fabric, 0.07);
-    if (!chair || /armchair/.test(name)) {
-      const armW = Math.min(0.16, w * 0.18);
-      for (const side of [-1, 1]) round([armW, seatH * 0.72, d * 0.78], [side * (w / 2 - armW / 2), legH + seatH * 0.72, 0.02], fabric, 0.055);
-    }
-    const cushionCount = chair ? 1 : Math.max(2, Math.min(4, Math.round(w / 0.75)));
-    for (let i = 0; i < cushionCount; i++) {
-      const cushionW = (w * 0.72) / cushionCount;
-      round([cushionW * 0.94, seatH * 0.17, d * 0.53], [-w * 0.36 + cushionW * (i + 0.5), legH + seatH * 0.64, d * 0.08], lightFabric, 0.045);
+    const isDiningOrTaskChair = /dining.*chair|chair.*dining|task chair|desk chair|study chair/.test(name);
+    const isStool = /stool|bar stool/.test(name);
+    const isBench = /bench/.test(name);
+    const isPouf = /pouf|pouffe|ottoman/.test(name);
+
+    if (isDiningOrTaskChair) {
+      // Clean, single-seat dining or desk chair without sofa arms or multiple cushions
+      const seatH = Math.min(0.48, Math.max(0.42, h * 0.5));
+      const legH = seatH - 0.04;
+      legs(0.025, 0.025, legH, legH / 2, darkWood);
+      // Seat cushion
+      round([w * 0.86, 0.05, d * 0.84], [0, legH + 0.025, 0], fabric, 0.02);
+      // Upright backrest at rear
+      const backH = Math.max(0.32, h - seatH);
+      round([w * 0.8, backH, 0.03], [0, seatH + backH / 2, -d * 0.38], fabric, 0.015);
+      // Back support posts
+      for (const side of [-1, 1]) {
+        addCylinder(group, 0.015, 0.015, backH, [side * (w * 0.36), seatH + backH / 2, -d * 0.38], darkWood, 8);
+      }
+    } else if (isStool) {
+      const seatH = Math.min(h * 0.85, Math.max(0.45, h * 0.6));
+      legs(0.025, 0.025, seatH, seatH / 2, darkWood);
+      round([w * 0.85, 0.05, d * 0.85], [0, seatH + 0.025, 0], fabric, 0.03);
+    } else if (isBench) {
+      const benchH = Math.min(0.48, Math.max(0.38, h * 0.5));
+      legs(0.03, 0.03, benchH - 0.05, (benchH - 0.05) / 2, darkWood);
+      round([w * 0.94, 0.06, d * 0.88], [0, benchH - 0.02, 0], fabric, 0.03);
+    } else if (isPouf) {
+      const poufH = Math.min(0.44, Math.max(0.35, h * 0.5));
+      round([w * 0.9, poufH, d * 0.9], [0, poufH / 2, 0], fabric, Math.min(0.12, poufH * 0.3));
+    } else {
+      const chair = /armchair|accent chair|lounge chair/.test(name);
+      const seatH = Math.min(0.47, Math.max(0.34, h * 0.36));
+      const legH = seatH * 0.42;
+      legs(Math.min(0.04, w * 0.035), Math.min(0.04, d * 0.035), legH, legH / 2, darkWood);
+      round([w * 0.9, seatH * 0.36, d * 0.86], [0, legH + seatH * 0.42, 0], fabric, Math.min(0.1, seatH * 0.22));
+      const backW = chair ? w * 0.82 : w * 0.91;
+      round([backW, Math.max(0.22, h * 0.36), Math.max(0.12, d * 0.2)], [0, legH + seatH + Math.min(0.34, h * 0.25), -d * 0.34], fabric, 0.07);
+      if (!chair || /armchair/.test(name)) {
+        const armW = Math.min(0.16, w * 0.18);
+        for (const side of [-1, 1]) round([armW, seatH * 0.72, d * 0.78], [side * (w / 2 - armW / 2), legH + seatH * 0.72, 0.02], fabric, 0.055);
+      }
+      const cushionCount = chair ? 1 : Math.max(2, Math.min(4, Math.round(w / 0.75)));
+      for (let i = 0; i < cushionCount; i++) {
+        const cushionW = (w * 0.72) / cushionCount;
+        round([cushionW * 0.94, seatH * 0.17, d * 0.53], [-w * 0.36 + cushionW * (i + 0.5), legH + seatH * 0.64, d * 0.08], lightFabric, 0.045);
+      }
     }
   } else if (item.category === 'table') {
     const low = /coffee|side table/.test(name);

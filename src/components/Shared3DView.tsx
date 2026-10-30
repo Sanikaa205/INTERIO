@@ -776,8 +776,7 @@ export const Shared3DView: React.FC<Shared3DViewProps> = ({
       // Main Room Hardwood/Stone Floor
       const floorGeo = polygonCorners ? buildPolygonFloorGeometry(polygonCorners) : new THREE.PlaneGeometry(roomW, roomL);
       const floorColor = interiorData.colorPalette?.find((swatch) => swatch.role === 'flooring')?.hex || '#b99569';
-      const floorMat = createFloorMaterial(floorColor, /tile|marble/i.test(interiorData.style || ''));
-      floorMat.wireframe = showWireframe;
+      const floorMat = createFloorMaterial(floorColor, /tile|marble/i.test(interiorData.style || ''), showWireframe);
       const floorMesh = createInteriorFloor(floorMat, { width: roomW, depth: roomL }, floorGeo);
       scene.add(floorMesh);
       floorMeshRef.current = floorMesh;

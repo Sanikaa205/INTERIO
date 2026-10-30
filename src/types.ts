@@ -175,6 +175,7 @@ export interface FurnitureItem {
   id: string;
   name: string;
   category: FurnitureCategory;
+  role?: string;
   form?: string;
   x: number; // meters
   y: number; // meters
@@ -188,6 +189,7 @@ export interface FurnitureItem {
   notes?: string;
   estimatedPrice?: string;
   preferredWall?: 'north' | 'south' | 'east' | 'west' | 'center';
+  facing?: 'wall' | 'room' | { focal: string };
   clearance?: number;
   assetId?: string;
   assetUrl?: string;
@@ -226,6 +228,15 @@ export interface InteriorDesignResult {
   /** Indicative cost range of the placed furniture for the chosen budget tier. */
   estimatedTotal?: string;
   openings?: { wall: 'north' | 'south' | 'east' | 'west'; start: number; end: number; type: 'door' | 'window' }[];
+  generation?: {
+    source: 'ai' | 'algorithmic' | 'fallback';
+    seed?: number;
+    arrangementId?: string;
+    aiFallbackReason?: string;
+  };
+  variationSeed?: number;
+  /** The style's default finish names (text), set by the generator. Not the editable finishes below. */
+  styleFinishes?: { floor?: string; wall?: string };
   /** Floor/wall finishes edited in the 3D editor. Absent until the user edits something. */
   finishes?: InteriorFinishes;
   /** The generator's wall and floor swatch colours, kept so "reset" can restore them. */
@@ -252,6 +263,7 @@ export interface ReconstructionData {
   detectedFeatures?: string[];
   structuralObservations?: string;
   renovationDesign?: InteriorDesignResult;
+  qwenRecommendations?: import('./services/qwenRenovation').QwenRenovationRecommendations;
 }
 
 // Saved Project Type
